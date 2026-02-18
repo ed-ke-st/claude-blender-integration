@@ -1,6 +1,6 @@
-# Claude Blender Integration
+# Claude + ChatGPT Blender Integration
 
-AI-powered 3D modeling in Blender using Claude. Create and modify 3D objects with natural language prompts through an automated workflow.
+AI-powered 3D modeling in Blender using Claude or ChatGPT. Create and modify 3D objects with natural language prompts through an automated workflow.
 
 ![Blender Version](https://img.shields.io/badge/Blender-5.0+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -45,8 +45,8 @@ Blender: *creates the object automatically*
 
 - Blender 5.0+ (may work with 4.x)
 - Node.js 18+ (for MCP server)
-- Claude Desktop app (for MCP)
-- Claude Pro subscription (or API access)
+- Claude Desktop app (for local stdio MCP) and/or ChatGPT workspace with custom connector support
+- OpenAI API key (optional, for local API bridge mode)
 
 ### Step 1: Install Blender Addon
 
@@ -68,7 +68,9 @@ Blender: *creates the object automatically*
    npm install
    ```
 
-### Step 3: Configure Claude Desktop
+### Step 3: Configure Your MCP Host
+
+#### Option A: Claude Desktop (stdio, local)
 
 Edit your Claude Desktop config file:
 
@@ -103,6 +105,37 @@ Add this configuration (replace `/path/to/` with your actual path):
 
 4. **Restart Claude Desktop** to load the MCP server
 
+#### Option B: ChatGPT custom connector (HTTP, remote URL)
+
+1. Start MCP server in HTTP mode:
+   ```bash
+   cd mcp-server
+   MCP_TRANSPORT=http HOST=127.0.0.1 PORT=3030 MCP_AUTH_TOKEN=your-long-token npm run start:http
+   ```
+2. Expose your local port with a secure tunnel (Cloudflare Tunnel/ngrok)
+3. In ChatGPT workspace settings, add a custom MCP connector pointing to your public `/mcp` URL
+4. Add `Authorization: Bearer your-long-token` in connector auth settings
+
+Blender behavior is unchanged: tool calls still write to `/tmp/blender_auto_execute.py`, and the addon auto-executes it.
+
+#### Option C: OpenAI API local bridge (simplest automation, no connector)
+
+1. Create an OpenAI API key and set it in your shell:
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   ```
+2. Generate code directly to Blender's watched file:
+   ```bash
+   cd mcp-server
+   npm run openai:generate -- "Create a stylized low-poly cabin with a chimney"
+   ```
+3. Blender auto-executes the generated code from `/tmp/blender_auto_execute.py`
+
+Optional:
+```bash
+npm run openai:generate -- "Create a spiral staircase" --context "Use metric units" --model gpt-4.1
+```
+
 ## Usage
 
 ### Basic Workflow
@@ -112,9 +145,9 @@ Add this configuration (replace `/path/to/` with your actual path):
    - Go to the "Claude Tools" tab
    - Click **"Enable Auto-Execute"**
 
-2. **In claude.ai**:
+2. **In Claude or ChatGPT**:
    - Describe what you want: "Create a spiral staircase with 10 steps"
-   - Claude generates and writes the code automatically
+   - The assistant generates and writes the code automatically
    
 3. **In Blender**:
    - Object appears automatically within ~0.5 seconds!
@@ -136,7 +169,7 @@ If something goes wrong:
 2. Click **"View Full Error (Copyable)"**
 3. Error opens in Blender's Text Editor
 4. Copy the error (`Cmd+A`, `Cmd+C`)
-5. Paste it to Claude for debugging
+5. Paste it to Claude/ChatGPT for debugging
 
 ## Examples
 
@@ -251,10 +284,10 @@ claude-blender-integration/
 
 ### The MCP Server
 
-The Model Context Protocol (MCP) server acts as a bridge between Claude and Blender:
+The Model Context Protocol (MCP) server acts as a bridge between Claude/ChatGPT and Blender:
 
-1. Provides tools to Claude (generate_blender_code, write_blender_code, etc.)
-2. When Claude uses `write_blender_code`, it writes to `/tmp/blender_auto_execute.py`
+1. Provides tools to the model host (generate_blender_code, write_blender_code, etc.)
+2. When the host uses `write_blender_code`, it writes to `/tmp/blender_auto_execute.py`
 3. Formats prompts specifically for Blender Python code generation
 
 ### The Blender Addon
@@ -278,7 +311,7 @@ Contributions welcome! Please:
 
 ### Ideas for Contributions
 
-- [ ] Support for more MCP hosts (not just Claude Desktop)
+- [x] Support for more MCP hosts (Claude Desktop + ChatGPT custom connector)
 - [ ] Undo/redo system for generations
 - [ ] Generation history browser
 - [ ] Parameter tweaking UI for generated objects

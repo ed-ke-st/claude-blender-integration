@@ -1,13 +1,13 @@
 # Quick Start Guide
 
-Get up and running with Claude Blender Integration in 5 minutes!
+Get up and running with Claude or ChatGPT in 5 minutes.
 
 ## Prerequisites Checklist
 
 - [ ] Blender 5.0+ installed
 - [ ] Node.js 18+ installed ([download](https://nodejs.org/))
-- [ ] Claude Desktop app installed ([download](https://claude.ai/download))
-- [ ] Claude Pro subscription (or API access)
+- [ ] Claude Desktop app installed (for stdio mode) and/or ChatGPT workspace with custom connector support
+- [ ] OpenAI API key (for Option C local bridge)
 
 ## Installation Steps
 
@@ -22,7 +22,9 @@ cd claude-blender-integration/mcp-server
 npm install
 ```
 
-### 2. Configure Claude Desktop (1 minute)
+### 2. Configure MCP Host (1 minute)
+
+#### Option A: Claude Desktop (stdio)
 
 **Mac users**: Edit `~/Library/Application Support/Claude/claude_desktop_config.json`
 
@@ -43,6 +45,28 @@ Add (replace path with your actual path):
 
 **Restart Claude Desktop**
 
+#### Option B: ChatGPT custom connector (HTTP)
+
+```bash
+cd mcp-server
+MCP_TRANSPORT=http HOST=127.0.0.1 PORT=3030 MCP_AUTH_TOKEN=your-long-token npm run start:http
+```
+
+Then:
+1. Expose port `3030` via secure tunnel (Cloudflare Tunnel/ngrok)
+2. In ChatGPT workspace settings, add a custom MCP connector to `https://<your-domain>/mcp`
+3. Configure bearer token auth with `your-long-token`
+
+#### Option C: OpenAI API local bridge (no connector)
+
+```bash
+cd mcp-server
+export OPENAI_API_KEY=sk-...
+npm run openai:generate -- "Create a simple cube at the origin"
+```
+
+Blender will auto-execute code from `/tmp/blender_auto_execute.py`.
+
 ### 3. Install Blender Addon (1 minute)
 
 1. Copy `blender-addon/claude_modeling_tools.py`
@@ -60,7 +84,7 @@ Add (replace path with your actual path):
 2. Go to "Claude Tools" tab
 3. Click "Enable Auto-Execute"
 
-**In claude.ai**:
+**In Claude or ChatGPT**:
 Type: "Create a simple cube at the origin"
 
 **In Blender**:
@@ -73,7 +97,7 @@ Watch the cube appear! ✨
 ```bash
 # Test the server
 cd mcp-server
-node index.js
+npm run start:stdio
 # Should output: "Blender MCP Server running on stdio"
 ```
 

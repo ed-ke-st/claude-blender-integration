@@ -16,50 +16,148 @@ import math
 import json
 import os
 import time
+import urllib.request
+import urllib.error
 
 
-# File watching globals
-WATCH_FILE_PATH = "/tmp/blender_auto_execute.py"
-last_modified_time = 0
+# File watching globals — one watch file per AI source
+WATCH_FILES = {
+    "claude": "/tmp/blender_claude_execute.py",
+    "openai": "/tmp/blender_openai_execute.py",
+}
+# Keep the legacy path as an alias so old MCP configs still work
+WATCH_FILE_PATH = WATCH_FILES["claude"]
+last_modified_times = {key: 0 for key in WATCH_FILES}
 
 
 def check_and_execute_file():
-    """Check if the watched file has been modified and execute it"""
-    global last_modified_time
-    
-    if not os.path.exists(WATCH_FILE_PATH):
-        return 0.5  # Check every 0.5 seconds
-    
-    try:
-        current_modified_time = os.path.getmtime(WATCH_FILE_PATH)
-        
-        if current_modified_time > last_modified_time:
-            last_modified_time = current_modified_time
-            
-            # Read and execute the file
-            with open(WATCH_FILE_PATH, 'r') as f:
-                code = f.read()
-            
-            if code.strip():  # Only execute if file has content
-                try:
-                    exec(code, {"bpy": bpy, "bmesh": bmesh, "Vector": Vector, 
-                               "math": math, "random": random})
-                    print(f"✓ Auto-executed code from {WATCH_FILE_PATH}")
-                except Exception as e:
-                    print(f"✗ Auto-execution error: {str(e)}")
-                    # Store error in scene for UI display
-                    if hasattr(bpy.context.scene, 'claude_last_error'):
-                        bpy.context.scene.claude_last_error = str(e)
-    
-    except Exception as e:
-        print(f"File watcher error: {str(e)}")
-    
-    return 0.5  # Continue checking every 0.5 seconds
+    """Check all watched files for modifications and execute them"""
+    for source, path in WATCH_FILES.items():
+        if not os.path.exists(path):
+            continue
+
+        try:
+            current_modified_time = os.path.getmtime(path)
+
+            if current_modified_time > last_modified_times[source]:
+                last_modified_times[source] = current_modified_time
+
+                with open(path, 'r') as f:
+                    code = f.read()
+
+                if code.strip():
+                    try:
+                        scene = bpy.context.scene
+                        model_name = source if source == "claude" else getattr(
+                            scene, 'claude_openai_model', source
+                        )
+                        execute_blender_code(code, scene, model_name=model_name)
+                        print(f"✓ Auto-executed code from {path} ({source})")
+                    except Exception as e:
+                        print(f"✗ Auto-execution error ({source}): {str(e)}")
+                        if hasattr(bpy.context.scene, 'claude_last_error'):
+                            bpy.context.scene.claude_last_error = str(e)
+
+        except Exception as e:
+            print(f"File watcher error ({source}): {str(e)}")
+
+    return 0.5
 
 
-# Timer function
 def file_watcher_timer():
     return check_and_execute_file()
+
+
+def get_or_create_collection(name):
+    """Get existing collection by name, or create it and link to the scene."""
+    col = bpy.data.collections.get(name)
+    if col is None:
+        col = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(col)
+    return col
+
+
+def move_objects_to_collection(objects, collection):
+    """Move objects into the target collection, unlinking from others."""
+    for obj in objects:
+        for col in list(obj.users_collection):
+            col.objects.unlink(obj)
+        collection.objects.link(obj)
+
+
+def execute_blender_code(code, scene=None, model_name=None):
+    """Execute generated code in Blender context, moving new objects to a model collection.
+    Rolls back if existing objects are deleted."""
+    objects_before = set(bpy.data.objects)
+    names_before = {o.name for o in objects_before}
+
+    # Save undo state so we can roll back destructive code
+    bpy.ops.ed.undo_push(message="Before AI code execution")
+
+    exec(code, {"bpy": bpy, "bmesh": bmesh, "Vector": Vector,
+                "math": math, "random": random})
+
+    # Check if any pre-existing objects were removed
+    names_after = {o.name for o in bpy.data.objects}
+    deleted = names_before - names_after
+    if deleted:
+        bpy.ops.ed.undo()
+        raise RuntimeError(
+            f"Generated code deleted existing objects ({', '.join(sorted(deleted))}). "
+            "Execution was rolled back."
+        )
+
+    new_objects = [o for o in bpy.data.objects if o not in objects_before]
+    if new_objects and model_name:
+        col = get_or_create_collection(f"Generated — {model_name}")
+        move_objects_to_collection(new_objects, col)
+
+
+def strip_code_fences(text):
+    """Remove markdown code fences if present"""
+    cleaned = text.strip()
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 2:
+            return "\n".join(lines[1:-1]).strip()
+    return cleaned
+
+
+def extract_response_text(payload):
+    """Extract text from OpenAI responses API payload"""
+    if payload.get("output_text"):
+        return payload["output_text"]
+    
+    text_parts = []
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") in {"output_text", "text"}:
+                text_value = content.get("text") or content.get("value") or ""
+                if text_value:
+                    text_parts.append(text_value)
+    
+    return "\n".join(text_parts).strip()
+
+
+def build_openai_generate_prompt(description, context_text=""):
+    """Build a strict prompt for Blender Python code generation"""
+    return f"""Generate Blender Python code for the following request.
+
+REQUIREMENTS:
+- Use bpy and bmesh where appropriate
+- Code must run in Blender 5.0+
+- Include basic error handling
+- Return ONLY Python code, no markdown fences
+- NEVER delete or remove existing objects — only create new ones
+- Do NOT manage collections — new objects are organized automatically
+- Blender 4.0+ API changes: shader node inputs were renamed:
+  - "Fac" is now "Factor"
+  - "Color1"/"Color2" are now "A"/"B" (Mix nodes)
+  - Principled BSDF: "Base Color", "Metallic", "Roughness", "IOR", "Alpha"
+  - NEVER use old names like "Fac", "Color1", "Color2"
+
+REQUEST: {description}
+{f'CONTEXT: {context_text}' if context_text else ''}"""
 
 
 # Operator to clear error message
@@ -216,7 +314,8 @@ class CLAUDE_OT_toggle_file_watcher(bpy.types.Operator):
             if not bpy.app.timers.is_registered(file_watcher_timer):
                 bpy.app.timers.register(file_watcher_timer)
             scene.claude_file_watcher_enabled = True
-            self.report({'INFO'}, f"Auto-execute enabled. Watching: {WATCH_FILE_PATH}")
+            paths = ", ".join(WATCH_FILES.values())
+            self.report({'INFO'}, f"Auto-execute enabled. Watching: {paths}")
         
         return {'FINISHED'}
 
@@ -301,8 +400,7 @@ class CLAUDE_OT_execute_code(bpy.types.Operator):
         
         try:
             # Execute the code
-            exec(code, {"bpy": bpy, "bmesh": bmesh, "Vector": Vector, 
-                       "math": math, "random": random})
+            execute_blender_code(code, scene)
             
             self.report({'INFO'}, "Code executed successfully")
             scene.claude_waiting_for_code = False
@@ -312,6 +410,119 @@ class CLAUDE_OT_execute_code(bpy.types.Operator):
             scene.claude_last_error = str(e)
             return {'CANCELLED'}
         
+        return {'FINISHED'}
+
+
+class CLAUDE_OT_generate_with_openai(bpy.types.Operator):
+    """Generate Blender code with OpenAI API and run it"""
+    bl_idname = "claude.generate_with_openai"
+    bl_label = "Generate with OpenAI"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        scene = context.scene
+        prompt = scene.claude_prompt.strip()
+        # Prefer env var — Blender's UI text input truncates long keys (~127 chars)
+        api_key = os.getenv("OPENAI_API_KEY", "").strip() or scene.claude_openai_api_key.strip()
+        model = scene.claude_openai_model.strip()
+        context_text = scene.claude_openai_context.strip()
+        
+        if not scene.claude_openai_enabled:
+            self.report({'ERROR'}, "Enable OpenAI API mode first")
+            return {'CANCELLED'}
+        
+        if not prompt:
+            self.report({'ERROR'}, "Enter a prompt first")
+            return {'CANCELLED'}
+        
+        if not api_key:
+            self.report({'ERROR'}, "Enter your OpenAI API key")
+            return {'CANCELLED'}
+        
+        if not model:
+            self.report({'ERROR'}, "Enter a model name")
+            return {'CANCELLED'}
+        
+        scene.claude_last_error = ""
+        scene.claude_last_prompt = prompt
+        
+        try:
+            request_body = {
+                "model": model,
+                "input": [
+                    {
+                        "role": "system",
+                        "content": "You write executable Blender Python only. No markdown. No explanation. NEVER delete, remove, or overwrite existing objects or data. NEVER call bpy.ops.object.delete or bpy.data.objects.remove. Only CREATE new objects. Do not create or manage collections — objects will be organized automatically. Target Blender 5.0+ API: shader node inputs were renamed in 4.0 — use 'Factor' not 'Fac', 'Roughness' not 'Roughness ' (no trailing space), 'Base Color' not 'Color'. Principled BSDF inputs: use 'Base Color', 'Metallic', 'Roughness', 'IOR', 'Alpha'. Mix nodes: use 'Factor', 'A', 'B' (not 'Fac', 'Color1', 'Color2')."
+                    },
+                    {
+                        "role": "user",
+                        "content": build_openai_generate_prompt(prompt, context_text)
+                    }
+                ]
+            }
+            
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(request_body).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            
+            with urllib.request.urlopen(req, timeout=90) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            
+            generated_text = extract_response_text(payload)
+            code = strip_code_fences(generated_text)
+            
+            if not code:
+                raise RuntimeError("Model returned empty output")
+            
+            scene.claude_generated_code = code
+            openai_watch = WATCH_FILES["openai"]
+            with open(openai_watch, "w", encoding="utf-8") as f:
+                f.write(code)
+
+            if scene.claude_file_watcher_enabled:
+                self.report({'INFO'}, f"Code generated and written to {openai_watch}")
+            else:
+                execute_blender_code(code, scene, model_name=model)
+                self.report({'INFO'}, "Code generated and executed successfully")
+            
+            scene.claude_waiting_for_code = False
+            return {'FINISHED'}
+        
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8")
+            except Exception:
+                detail = str(e)
+            scene.claude_last_error = f"OpenAI API error ({e.code}): {detail}"
+            self.report({'ERROR'}, f"OpenAI API error ({e.code})")
+            return {'CANCELLED'}
+        except Exception as e:
+            scene.claude_last_error = f"OpenAI generation error: {str(e)}"
+            self.report({'ERROR'}, "OpenAI generation failed")
+            return {'CANCELLED'}
+
+
+class CLAUDE_OT_paste_api_key(bpy.types.Operator):
+    """Paste OpenAI API key from clipboard (bypasses text field length limit)"""
+    bl_idname = "claude.paste_api_key"
+    bl_label = "Paste API Key from Clipboard"
+
+    def execute(self, context):
+        key = context.window_manager.clipboard.strip()
+        if not key:
+            self.report({'ERROR'}, "Clipboard is empty")
+            return {'CANCELLED'}
+        if not key.startswith("sk-"):
+            self.report({'ERROR'}, "Clipboard doesn't look like an OpenAI key (should start with sk-)")
+            return {'CANCELLED'}
+        context.scene.claude_openai_api_key = key
+        self.report({'INFO'}, f"API key pasted ({len(key)} chars)")
         return {'FINISHED'}
 
 
@@ -354,11 +565,11 @@ class CLAUDE_PT_modeling_panel(bpy.types.Panel):
         row = box.row()
         if scene.claude_file_watcher_enabled:
             row.operator("claude.toggle_file_watcher", icon='PAUSE', text="Disable Auto-Execute")
-            box.label(text=f"Watching: {WATCH_FILE_PATH}", icon='CHECKMARK')
-            box.label(text="Ask Claude in claude.ai to generate code!")
+            for source, path in WATCH_FILES.items():
+                box.label(text=f"{source}: {path}", icon='CHECKMARK')
         else:
             row.operator("claude.toggle_file_watcher", icon='PLAY', text="Enable Auto-Execute")
-            box.label(text="Enable to auto-run code from Claude", icon='INFO')
+            box.label(text="Enable to auto-run code from AI sources", icon='INFO')
         
         # Lock/Unlock section
         box2 = box.box()
@@ -375,8 +586,28 @@ class CLAUDE_PT_modeling_panel(bpy.types.Panel):
         box.label(text="Manual Generation:", icon='CONSOLE')
         
         # Prompt input
-        box.prop(scene, "claude_prompt", text="")
-        box.operator("claude.generate_from_prompt", icon='PLAY', text="Request Code")
+        prompt_col = box.column()
+        prompt_col.scale_y = 2.0
+        prompt_col.prop(scene, "claude_prompt", text="")
+        if scene.claude_openai_enabled:
+            box.operator("claude.generate_with_openai", icon='URL', text="Generate with OpenAI")
+        
+        openai_box = box.box()
+        openai_box.label(text="OpenAI API (Local):", icon='PREFERENCES')
+        openai_box.prop(scene, "claude_openai_enabled", text="Enable OpenAI in Addon")
+        
+        if scene.claude_openai_enabled:
+            if os.getenv("OPENAI_API_KEY"):
+                openai_box.label(text="Using OPENAI_API_KEY from environment", icon='CHECKMARK')
+            else:
+                key = scene.claude_openai_api_key
+                if key:
+                    masked = key[:8] + "..." + key[-4:] + f"  ({len(key)} chars)"
+                    openai_box.label(text=f"Key: {masked}", icon='LOCKED')
+                openai_box.operator("claude.paste_api_key", icon='PASTEDOWN', text="Paste API Key from Clipboard")
+            openai_box.prop(scene, "claude_openai_model", text="Model")
+            openai_box.prop(scene, "claude_openai_context", text="Context")
+            openai_box.label(text="Use prompt field above, then click Generate with OpenAI", icon='INFO')
         
         if scene.claude_waiting_for_code:
             box.label(text="Waiting for Claude...", icon='TIME')
@@ -456,6 +687,37 @@ def register_properties():
         name="Last Error",
         default=""
     )
+    
+    bpy.types.Scene.claude_openai_enabled = bpy.props.BoolProperty(
+        name="Enable OpenAI",
+        description="Use OpenAI API directly from Blender addon",
+        default=False
+    )
+    
+    bpy.types.Scene.claude_openai_api_key = bpy.props.StringProperty(
+        name="OpenAI API Key",
+        description="OpenAI API key (stored in scene)",
+        default=os.getenv("OPENAI_API_KEY", ""),
+    )
+    
+    bpy.types.Scene.claude_openai_model = bpy.props.EnumProperty(
+        name="Model",
+        description="OpenAI model to use",
+        items=[
+            ("gpt-4.1-nano", "GPT-4.1 Nano", "Fastest, cheapest"),
+            ("gpt-4.1-mini", "GPT-4.1 Mini", "Fast and affordable"),
+            ("gpt-4.1", "GPT-4.1", "Flagship model"),
+            ("o4-mini", "o4-mini", "Reasoning, affordable"),
+            ("o3", "o3", "Reasoning, powerful"),
+        ],
+        default="gpt-4.1-mini"
+    )
+    
+    bpy.types.Scene.claude_openai_context = bpy.props.StringProperty(
+        name="Context",
+        description="Optional scene constraints/context",
+        default=""
+    )
 
 
 def unregister_properties():
@@ -465,6 +727,10 @@ def unregister_properties():
     del bpy.types.Scene.claude_waiting_for_code
     del bpy.types.Scene.claude_last_prompt
     del bpy.types.Scene.claude_last_error
+    del bpy.types.Scene.claude_openai_enabled
+    del bpy.types.Scene.claude_openai_api_key
+    del bpy.types.Scene.claude_openai_model
+    del bpy.types.Scene.claude_openai_context
 
 
 # Registration
@@ -478,6 +744,8 @@ classes = (
     CLAUDE_OT_show_error,
     CLAUDE_OT_generate_from_prompt,
     CLAUDE_OT_execute_code,
+    CLAUDE_OT_generate_with_openai,
+    CLAUDE_OT_paste_api_key,
     CLAUDE_OT_array_on_curve,
     CLAUDE_PT_modeling_panel,
 )
