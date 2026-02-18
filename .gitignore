@@ -1,0 +1,26 @@
+# Node modules
+mcp-server/node_modules/
+
+# Blender
+*.blend1
+*.blend2
+__pycache__/
+*.pyc
+
+# System
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp
+tmp/
+temp/
