@@ -25,6 +25,7 @@ WATCH_FILES = {
     "claude": "/tmp/blender_claude_execute.py",
     "openai": "/tmp/blender_openai_execute.py",
 }
+RESULT_FILE = "/tmp/blender_result.json"
 # Keep the legacy path as an alias so old MCP configs still work
 WATCH_FILE_PATH = WATCH_FILES["claude"]
 last_modified_times = {key: 0 for key in WATCH_FILES}
@@ -85,6 +86,39 @@ def move_objects_to_collection(objects, collection):
         collection.objects.link(obj)
 
 
+def _obj_info(obj):
+    """Return a dict describing an object's key properties."""
+    info = {
+        "name": obj.name,
+        "type": obj.type,
+        "location": [round(v, 4) for v in obj.location],
+        "dimensions": [round(v, 4) for v in obj.dimensions],
+    }
+    if obj.type == 'MESH' and obj.data:
+        info["vertices"] = len(obj.data.vertices)
+        info["faces"] = len(obj.data.polygons)
+    return info
+
+
+def write_result(status, message, created=None, model_name=None, code=None):
+    """Write execution result to JSON file for MCP server to read."""
+    result = {
+        "status": status,
+        "message": message,
+        "timestamp": time.time(),
+        "model": model_name,
+        "last_code": code,
+        "objects_created": created or [],
+        "scene_objects": [_obj_info(o) for o in bpy.data.objects],
+        "collections": [c.name for c in bpy.data.collections],
+    }
+    try:
+        with open(RESULT_FILE, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+    except Exception as e:
+        print(f"Failed to write result file: {e}")
+
+
 def execute_blender_code(code, scene=None, model_name=None):
     """Execute generated code in Blender context, moving new objects to a model collection.
     Rolls back if existing objects are deleted."""
@@ -94,23 +128,31 @@ def execute_blender_code(code, scene=None, model_name=None):
     # Save undo state so we can roll back destructive code
     bpy.ops.ed.undo_push(message="Before AI code execution")
 
-    exec(code, {"bpy": bpy, "bmesh": bmesh, "Vector": Vector,
-                "math": math, "random": random})
+    try:
+        exec(code, {"bpy": bpy, "bmesh": bmesh, "Vector": Vector,
+                    "math": math, "random": random})
+    except Exception as e:
+        write_result("error", str(e), model_name=model_name, code=code)
+        raise
 
     # Check if any pre-existing objects were removed
     names_after = {o.name for o in bpy.data.objects}
     deleted = names_before - names_after
     if deleted:
         bpy.ops.ed.undo()
-        raise RuntimeError(
-            f"Generated code deleted existing objects ({', '.join(sorted(deleted))}). "
-            "Execution was rolled back."
-        )
+        msg = (f"Generated code deleted existing objects ({', '.join(sorted(deleted))}). "
+               "Execution was rolled back.")
+        write_result("rolled_back", msg, model_name=model_name, code=code)
+        raise RuntimeError(msg)
 
     new_objects = [o for o in bpy.data.objects if o not in objects_before]
+    new_names = [o.name for o in new_objects]
     if new_objects and model_name:
         col = get_or_create_collection(f"Generated — {model_name}")
         move_objects_to_collection(new_objects, col)
+
+    write_result("success", f"Created {len(new_names)} object(s)",
+                 created=new_names, model_name=model_name, code=code)
 
 
 def strip_code_fences(text):

@@ -12,6 +12,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const DEFAULT_WATCH_FILE = "/tmp/blender_claude_execute.py";
+const RESULT_FILE = "/tmp/blender_result.json";
 
 function createServer() {
   const server = new Server(
@@ -69,6 +70,17 @@ function createServer() {
           },
         },
         {
+          name: "get_blender_result",
+          description:
+            "Read the latest execution result from Blender. Returns status (success/error/rolled_back), " +
+            "error message if any, list of created objects, all scene objects, and all collections. " +
+            "Call this after create_in_blender to verify the code ran successfully or to diagnose errors.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
           name: "debug_blender_error",
           description: "Help debug Blender Python errors",
           inputSchema: {
@@ -103,14 +115,29 @@ function createServer() {
           const code = stripCodeFences(args.code);
           await fs.writeFile(watchFilePath, code, "utf8");
 
-          return {
-            content: [
-              {
-                type: "text",
-                text: `✓ Code written to ${watchFilePath}. Blender will auto-execute it within ~0.5 seconds.`,
-              },
-            ],
-          };
+          // Wait for Blender to execute and write result
+          let result = null;
+          for (let i = 0; i < 6; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+            try {
+              const data = await fs.readFile(RESULT_FILE, "utf8");
+              const parsed = JSON.parse(data);
+              // Only use result if it's newer than our write
+              const watchStat = await fs.stat(watchFilePath);
+              if (parsed.timestamp >= watchStat.mtimeMs / 1000 - 1) {
+                result = data;
+                break;
+              }
+            } catch {
+              // Result file not ready yet
+            }
+          }
+
+          const response = result
+            ? `✓ Code sent to Blender.\n\nExecution result:\n${result}`
+            : `✓ Code written to ${watchFilePath}. Blender has not reported a result yet — auto-execute may be disabled, or the addon needs reloading.`;
+
+          return { content: [{ type: "text", text: response }] };
         } catch (error) {
           return {
             content: [
@@ -120,6 +147,30 @@ function createServer() {
               },
             ],
             isError: true,
+          };
+        }
+      }
+
+      case "get_blender_result": {
+        const fs = await import("fs/promises");
+
+        try {
+          const data = await fs.readFile(RESULT_FILE, "utf8");
+          return {
+            content: [{ type: "text", text: data }],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  error.code === "ENOENT"
+                    ? "No result file yet. Blender may not have executed any code, or auto-execute is not enabled."
+                    : `Error reading result file: ${error.message}`,
+              },
+            ],
+            isError: error.code !== "ENOENT",
           };
         }
       }
