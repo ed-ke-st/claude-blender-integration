@@ -1,0 +1,37 @@
+{
+  "name": "blender-desktop-launcher",
+  "version": "0.1.0",
+  "description": "Mac desktop launcher for the Claude/Codex/ChatGPT Blender MCP integration",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack:mac": "electron-builder --mac",
+    "pack:mac:unsigned": "electron-builder --mac --config.mac.identity=null"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^2.5.0",
+    "electron": "^31.0.2",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.edward.blenderlauncher",
+    "productName": "Blender MCP Launcher",
+    "afterSign": "build/notarize.js",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    }
+  }
+}

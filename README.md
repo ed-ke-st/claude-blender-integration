@@ -14,6 +14,17 @@ AI-powered 3D modeling in Blender using Claude, ChatGPT, or Codex. Create and mo
 - 🐛 **Error Handling**: View and copy errors easily for debugging
 - 🎬 **Supports Everything**: Meshes, curves, cameras, animations, materials, and more
 
+## Mac Desktop App (Beta)
+
+If you want setup without terminal commands, use the desktop launcher in:
+
+`desktop-app/`
+
+It provides one-click setup checks, dependency install, addon install, Claude/Codex config updates, and MCP server start/stop.
+
+See:
+- `desktop-app/README.md`
+
 ## Demo
 
 ```
@@ -31,7 +42,7 @@ Blender: *creates the object automatically*
 └─────────────┘      └──────────────┘      └─────────────┘
                             │
                             ▼
-                    /tmp/blender_auto_execute.py
+                  /tmp/blender_claude_execute.py
 ```
 
 1. You describe what you want in Claude/Codex/ChatGPT
@@ -139,7 +150,7 @@ Verify in Codex TUI:
 3. In ChatGPT workspace settings, add a custom MCP connector pointing to your public `/mcp` URL
 4. Add `Authorization: Bearer your-long-token` in connector auth settings
 
-Blender behavior is unchanged: tool calls still write to `/tmp/blender_auto_execute.py`, and the addon auto-executes it.
+Blender behavior is unchanged: MCP tool calls write to `/tmp/blender_claude_execute.py` by default (or `BLENDER_WATCH_FILE`), and the addon auto-executes it.
 
 #### Option D: OpenAI API local bridge (simplest automation, no connector)
 
@@ -152,7 +163,7 @@ Blender behavior is unchanged: tool calls still write to `/tmp/blender_auto_exec
    cd mcp-server
    npm run openai:generate -- "Create a stylized low-poly cabin with a chimney"
    ```
-3. Blender auto-executes the generated code from `/tmp/blender_auto_execute.py`
+3. Blender auto-executes the generated code from `/tmp/blender_claude_execute.py` (or `/tmp/blender_openai_execute.py` for OpenAI-source watcher flows)
 
 Optional:
 ```bash
@@ -306,8 +317,9 @@ The addon includes some built-in operators:
 ### Objects Not Appearing
 
 **Verify auto-execute is enabled:**
-- Check the Claude Tools panel shows "Watching: /tmp/blender_auto_execute.py"
-- On Mac, check `/tmp/blender_auto_execute.py` exists after generation
+- Check the Claude Tools panel shows both watched files:
+  `/tmp/blender_claude_execute.py`, `/tmp/blender_openai_execute.py`
+- On Mac, check `/tmp/blender_claude_execute.py` exists after generation
 
 **Check for errors:**
 - Look at the error box in Claude Tools panel
@@ -339,15 +351,15 @@ claude-blender-integration/
 
 The Model Context Protocol (MCP) server acts as a bridge between Claude/ChatGPT and Blender:
 
-1. Provides tools to the model host (generate_blender_code, write_blender_code, etc.)
-2. When the host uses `write_blender_code`, it writes to `/tmp/blender_auto_execute.py`
+1. Provides tools to the model host (`create_in_blender`, `delete_in_blender`, `get_blender_result`, etc.)
+2. MCP writes generated execution code to `/tmp/blender_claude_execute.py` by default (or `BLENDER_WATCH_FILE`)
 3. Formats prompts specifically for Blender Python code generation
 
 ### The Blender Addon
 
 The addon provides:
 
-1. **File Watcher**: Checks `/tmp/blender_auto_execute.py` every 0.5 seconds
+1. **File Watcher**: Checks `/tmp/blender_claude_execute.py` and `/tmp/blender_openai_execute.py` every 0.5 seconds
 2. **Auto-Executor**: Runs changed code with proper imports (bpy, bmesh, etc.)
 3. **Collection Manager**: Organizes generated objects
 4. **Lock System**: Preserves objects via custom properties

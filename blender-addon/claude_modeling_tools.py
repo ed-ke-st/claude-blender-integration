@@ -170,8 +170,16 @@ def _is_generated_object(obj):
 def execute_blender_code(code, scene=None, model_name=None):
     """Execute generated code in Blender context, moving new objects to a model collection.
     Rolls back if existing objects are deleted."""
-    objects_before = set(bpy.data.objects)
+    objects_before = list(bpy.data.objects)
     names_before = {o.name for o in objects_before}
+    # Snapshot pre-execution metadata by object name so deleted object references
+    # are never dereferenced after execution.
+    locked_names_before = {o.name for o in objects_before if o.get("claude_locked")}
+    generated_names_before = {
+        o.name
+        for o in objects_before
+        if any(col.name.startswith("Generated — ") for col in o.users_collection)
+    }
     # Capture delete authorization state before running generated code so code
     # cannot self-authorize by mutating scene properties during execution.
     armed_before = bool(scene and getattr(scene, "claude_delete_armed", False))
@@ -193,8 +201,7 @@ def execute_blender_code(code, scene=None, model_name=None):
     names_after = {o.name for o in bpy.data.objects}
     deleted = names_before - names_after
     if deleted:
-        locked_names = {o.name for o in objects_before if o.get("claude_locked")}
-        deleted_locked = deleted & locked_names
+        deleted_locked = deleted & locked_names_before
         allowed_delete_names, provided_token = parse_delete_directives(code)
         armed = armed_before
         expected_token = token_before
@@ -208,9 +215,7 @@ def execute_blender_code(code, scene=None, model_name=None):
             and not deleted_locked
         )
 
-        deleted_generated_only = all(
-            _is_generated_object(o) for o in objects_before if o.name in deleted
-        )
+        deleted_generated_only = deleted.issubset(generated_names_before)
         delete_ok_trusted = (
             trusted_delete_before
             and bool(allowed_delete_names)

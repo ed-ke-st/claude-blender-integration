@@ -85,7 +85,7 @@ export OPENAI_API_KEY=sk-...
 npm run openai:generate -- "Create a simple cube at the origin"
 ```
 
-Blender will auto-execute code from `/tmp/blender_auto_execute.py`.
+Blender will auto-execute code from `/tmp/blender_claude_execute.py`.
 
 ### 3. Install Blender Addon (1 minute)
 
@@ -134,7 +134,7 @@ ls ~/Library/Application\ Support/Blender/5.0/scripts/addons/claude_modeling_too
 ### Nothing Happening in Blender?
 
 1. Is "Enable Auto-Execute" turned on?
-2. Check `/tmp/blender_auto_execute.py` exists (Mac/Linux)
+2. Check `/tmp/blender_claude_execute.py` exists (Mac/Linux)
 3. Look for errors in the Claude Tools panel
 
 ## Next Steps

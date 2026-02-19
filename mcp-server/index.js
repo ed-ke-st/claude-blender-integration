@@ -13,8 +13,8 @@ import {
 
 const DEFAULT_WATCH_FILE = "/tmp/blender_claude_execute.py";
 const RESULT_FILE = "/tmp/blender_result.json";
-const WAIT_POLL_COUNT = 6;
-const WAIT_POLL_MS = 500;
+const WAIT_POLL_COUNT = 24;
+const WAIT_POLL_MS = 250;
 
 function createServer() {
   const server = new Server(
@@ -207,9 +207,27 @@ function createServer() {
         const fs = await import("fs/promises");
 
         try {
+          const requestId = randomUUID();
+          const probeCode = buildSnapshotProbeScript(requestId);
+          await fs.writeFile(watchFilePath, probeCode, "utf8");
+
+          const fresh = await waitForFreshResult(fs, watchFilePath, requestId);
+          if (fresh) {
+            return {
+              content: [{ type: "text", text: fresh }],
+            };
+          }
+
           const data = await fs.readFile(RESULT_FILE, "utf8");
           return {
-            content: [{ type: "text", text: data }],
+            content: [
+              {
+                type: "text",
+                text:
+                  "⚠ Timed out waiting for a fresh Blender snapshot. Returning last known result:\n\n" +
+                  data,
+              },
+            ],
           };
         } catch (error) {
           return {
@@ -272,6 +290,9 @@ async function waitForFreshResult(fs, watchFilePath, requestId = "") {
       const parsed = JSON.parse(data);
       if (requestId && parsed.request_id === requestId) {
         return data;
+      }
+      if (requestId) {
+        continue;
       }
       const watchStat = await fs.stat(watchFilePath);
       if (parsed.timestamp >= watchStat.mtimeMs / 1000 - 1) {
@@ -338,6 +359,13 @@ if missing:
 
 function stampCodeWithRequestId(code, requestId) {
   return `# MCP_REQUEST_ID:${requestId}\n${code}`;
+}
+
+function buildSnapshotProbeScript(requestId) {
+  return `# MCP_REQUEST_ID:${requestId}
+import bpy
+print("Blender snapshot probe")
+`;
 }
 
 function parseAllowedOrigins() {

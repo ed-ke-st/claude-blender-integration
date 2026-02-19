@@ -24,3 +24,7 @@ Thumbs.db
 # Temp
 tmp/
 temp/
+
+# Desktop app
+desktop-app/node_modules/
+desktop-app/dist/
