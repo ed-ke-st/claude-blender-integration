@@ -1,13 +1,13 @@
-# Claude + ChatGPT Blender Integration
+# Claude + ChatGPT + Codex Blender Integration
 
-AI-powered 3D modeling in Blender using Claude or ChatGPT. Create and modify 3D objects with natural language prompts through an automated workflow.
+AI-powered 3D modeling in Blender using Claude, ChatGPT, or Codex. Create and modify 3D objects with natural language prompts through an automated workflow.
 
 ![Blender Version](https://img.shields.io/badge/Blender-5.0+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## Features
 
-- 🎨 **Natural Language Generation**: Describe what you want, Claude generates the Python code
+- 🎨 **Natural Language Generation**: Describe what you want, your assistant generates the Python code
 - 🔄 **Auto-Execution**: Code runs automatically in Blender - no copy/paste needed
 - 🔒 **Lock/Preserve Objects**: Keep objects you like while generating new ones
 - 📁 **Auto-Organization**: All generated objects go into a dedicated collection
@@ -18,7 +18,7 @@ AI-powered 3D modeling in Blender using Claude or ChatGPT. Create and modify 3D 
 
 ```
 You: "Create twirly birch branches that wrap around forming a cylinder"
-Claude: *generates Python code*
+Assistant: *generates Python code*
 Blender: *creates the object automatically*
 ```
 
@@ -34,8 +34,8 @@ Blender: *creates the object automatically*
                     /tmp/blender_auto_execute.py
 ```
 
-1. You describe what you want in claude.ai
-2. Claude uses MCP tools to write Python code to a watched file
+1. You describe what you want in Claude/Codex/ChatGPT
+2. Your assistant uses MCP tools to write Python code to a watched file
 3. Blender detects the file change and executes it automatically
 4. Object appears in your scene!
 
@@ -45,7 +45,7 @@ Blender: *creates the object automatically*
 
 - Blender 5.0+ (may work with 4.x)
 - Node.js 18+ (for MCP server)
-- Claude Desktop app (for local stdio MCP) and/or ChatGPT workspace with custom connector support
+- Claude Desktop app and/or Codex app/CLI (for local stdio MCP), and/or ChatGPT workspace with custom connector support
 - OpenAI API key (optional, for local API bridge mode)
 
 ### Step 1: Install Blender Addon
@@ -105,7 +105,30 @@ Add this configuration (replace `/path/to/` with your actual path):
 
 4. **Restart Claude Desktop** to load the MCP server
 
-#### Option B: ChatGPT custom connector (HTTP, remote URL)
+#### Option B: Codex (stdio, local)
+
+Codex uses MCP over `stdio`, same as Claude Desktop.
+
+Quick setup (from repo root):
+
+```bash
+./scripts/setup-codex-mcp.sh
+```
+
+Manual setup:
+
+```bash
+codex mcp add blender -- node /path/to/claude-blender-integration/mcp-server/index.js
+```
+
+Codex config paths:
+- Global: `~/.codex/config.toml`
+- Project (trusted projects): `.codex/config.toml`
+
+Verify in Codex TUI:
+- Run `/mcp` and confirm `blender` is active.
+
+#### Option C: ChatGPT custom connector (HTTP, remote URL)
 
 1. Start MCP server in HTTP mode:
    ```bash
@@ -118,7 +141,7 @@ Add this configuration (replace `/path/to/` with your actual path):
 
 Blender behavior is unchanged: tool calls still write to `/tmp/blender_auto_execute.py`, and the addon auto-executes it.
 
-#### Option C: OpenAI API local bridge (simplest automation, no connector)
+#### Option D: OpenAI API local bridge (simplest automation, no connector)
 
 1. Create an OpenAI API key and set it in your shell:
    ```bash
@@ -145,7 +168,7 @@ npm run openai:generate -- "Create a spiral staircase" --context "Use metric uni
    - Go to the "Claude Tools" tab
    - Click **"Enable Auto-Execute"**
 
-2. **In Claude or ChatGPT**:
+2. **In Claude, Codex, or ChatGPT**:
    - Describe what you want: "Create a spiral staircase with 10 steps"
    - The assistant generates and writes the code automatically
    
@@ -161,6 +184,36 @@ When you generate something you like:
 3. Generate new objects - locked ones won't be deleted
 4. Build up your scene iteratively!
 
+### Controlled Deletion (Explicit + One-Time)
+
+By default, generated code cannot delete existing objects. Any deletion attempt is rolled back.
+
+If you intentionally want AI code to delete specific objects:
+
+1. In Claude Tools, click **"Arm One-Time Delete"** (this creates a one-time token and copies it to clipboard)
+2. In the generated code, include both comments:
+   - `DEL:RyeLoaf` (or `DELETE:[RyeLoaf]`)
+   - `DELETE_TOKEN:<token>`
+3. Run once. The delete arm and token are cleared automatically after a successful authorized delete.
+
+Safety rules:
+- Deleted object names must be explicitly listed in `DEL:...` or `DELETE:[...]`
+- `DELETE_TOKEN` must match the currently armed token
+- Locked objects are never deletable by AI code
+
+### Trusted Delete Session (Faster Iteration)
+
+If you want repeated delete requests without re-arming every time:
+
+1. Enable **Trusted Session** in Claude Tools
+2. In generated code, still include `DEL:...` (or `DELETE:[...]`) with exact object names
+3. Token is not required while trusted session is enabled
+
+Guardrails remain:
+- Only objects in `Generated — ...` collections can be deleted
+- Locked objects are never deletable
+- Any unlisted deletions are rolled back
+
 ### Handling Errors
 
 If something goes wrong:
@@ -169,7 +222,7 @@ If something goes wrong:
 2. Click **"View Full Error (Copyable)"**
 3. Error opens in Blender's Text Editor
 4. Copy the error (`Cmd+A`, `Cmd+C`)
-5. Paste it to Claude/ChatGPT for debugging
+5. Paste it to Claude/Codex/ChatGPT for debugging
 
 ## Examples
 

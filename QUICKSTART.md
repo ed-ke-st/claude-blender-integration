@@ -1,13 +1,13 @@
 # Quick Start Guide
 
-Get up and running with Claude or ChatGPT in 5 minutes.
+Get up and running with Claude, Codex, or ChatGPT in 5 minutes.
 
 ## Prerequisites Checklist
 
 - [ ] Blender 5.0+ installed
 - [ ] Node.js 18+ installed ([download](https://nodejs.org/))
-- [ ] Claude Desktop app installed (for stdio mode) and/or ChatGPT workspace with custom connector support
-- [ ] OpenAI API key (for Option C local bridge)
+- [ ] Claude Desktop app and/or Codex app/CLI installed (for stdio mode), and/or ChatGPT workspace with custom connector support
+- [ ] OpenAI API key (for Option D local bridge)
 
 ## Installation Steps
 
@@ -45,7 +45,27 @@ Add (replace path with your actual path):
 
 **Restart Claude Desktop**
 
-#### Option B: ChatGPT custom connector (HTTP)
+#### Option B: Codex (stdio)
+
+Quick setup (from repo root):
+
+```bash
+./scripts/setup-codex-mcp.sh
+```
+
+Manual setup:
+
+```bash
+codex mcp add blender -- node /FULL/PATH/TO/claude-blender-integration/mcp-server/index.js
+```
+
+Codex config paths:
+- Global: `~/.codex/config.toml`
+- Project (trusted projects): `.codex/config.toml`
+
+In Codex TUI, run `/mcp` and confirm `blender` is active.
+
+#### Option C: ChatGPT custom connector (HTTP)
 
 ```bash
 cd mcp-server
@@ -57,7 +77,7 @@ Then:
 2. In ChatGPT workspace settings, add a custom MCP connector to `https://<your-domain>/mcp`
 3. Configure bearer token auth with `your-long-token`
 
-#### Option C: OpenAI API local bridge (no connector)
+#### Option D: OpenAI API local bridge (no connector)
 
 ```bash
 cd mcp-server
@@ -84,7 +104,7 @@ Blender will auto-execute code from `/tmp/blender_auto_execute.py`.
 2. Go to "Claude Tools" tab
 3. Click "Enable Auto-Execute"
 
-**In Claude or ChatGPT**:
+**In Claude, Codex, or ChatGPT**:
 Type: "Create a simple cube at the origin"
 
 **In Blender**:

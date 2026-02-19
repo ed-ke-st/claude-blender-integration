@@ -13,6 +13,8 @@ import {
 
 const DEFAULT_WATCH_FILE = "/tmp/blender_claude_execute.py";
 const RESULT_FILE = "/tmp/blender_result.json";
+const WAIT_POLL_COUNT = 6;
+const WAIT_POLL_MS = 500;
 
 function createServer() {
   const server = new Server(
@@ -48,6 +50,30 @@ function createServer() {
               },
             },
             required: ["code"],
+          },
+        },
+        {
+          name: "delete_in_blender",
+          description:
+            "Delete specific Blender objects by exact name using the addon's explicit safety checks. " +
+            "Uses explicit directives (DEL:ObjectName or DELETE:[...]) and, unless trusted-session mode is enabled in Blender, a matching one-time delete token.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              object_names: {
+                type: "array",
+                items: { type: "string" },
+                minItems: 1,
+                description:
+                  "Exact Blender object names to delete (e.g., ['RyeLoaf'])",
+              },
+              delete_token: {
+                type: "string",
+                description:
+                  "Optional one-time delete token from Blender's 'Arm One-Time Delete'",
+              },
+            },
+            required: ["object_names"],
           },
         },
         {
@@ -112,26 +138,11 @@ function createServer() {
         const fs = await import("fs/promises");
 
         try {
+          const requestId = randomUUID();
           const code = stripCodeFences(args.code);
-          await fs.writeFile(watchFilePath, code, "utf8");
-
-          // Wait for Blender to execute and write result
-          let result = null;
-          for (let i = 0; i < 6; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-            try {
-              const data = await fs.readFile(RESULT_FILE, "utf8");
-              const parsed = JSON.parse(data);
-              // Only use result if it's newer than our write
-              const watchStat = await fs.stat(watchFilePath);
-              if (parsed.timestamp >= watchStat.mtimeMs / 1000 - 1) {
-                result = data;
-                break;
-              }
-            } catch {
-              // Result file not ready yet
-            }
-          }
+          const stampedCode = stampCodeWithRequestId(code, requestId);
+          await fs.writeFile(watchFilePath, stampedCode, "utf8");
+          const result = await waitForFreshResult(fs, watchFilePath, requestId);
 
           const response = result
             ? `✓ Code sent to Blender.\n\nExecution result:\n${result}`
@@ -144,6 +155,47 @@ function createServer() {
               {
                 type: "text",
                 text: `✗ Error writing to ${watchFilePath}: ${error.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
+      case "delete_in_blender": {
+        const fs = await import("fs/promises");
+
+        try {
+          const requestId = randomUUID();
+          const objectNames = normalizeObjectNames(args.object_names);
+          if (objectNames.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "✗ delete_in_blender requires at least one valid object name.",
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          const deleteToken = normalizeOptionalToken(args.delete_token);
+          const code = buildDeleteScript(objectNames, deleteToken, requestId);
+          await fs.writeFile(watchFilePath, code, "utf8");
+          const result = await waitForFreshResult(fs, watchFilePath, requestId);
+
+          const response = result
+            ? `✓ Delete request sent to Blender for: ${objectNames.join(", ")}\n\nExecution result:\n${result}`
+            : `✓ Delete request written to ${watchFilePath} for: ${objectNames.join(", ")}. Blender has not reported a result yet — auto-execute may be disabled, or the addon needs reloading.`;
+
+          return { content: [{ type: "text", text: response }] };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✗ Error preparing delete request: ${error.message}`,
               },
             ],
             isError: true,
@@ -210,6 +262,82 @@ function stripCodeFences(text) {
     return lines.slice(1, -1).join("\n").trim();
   }
   return trimmed;
+}
+
+async function waitForFreshResult(fs, watchFilePath, requestId = "") {
+  for (let i = 0; i < WAIT_POLL_COUNT; i++) {
+    await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
+    try {
+      const data = await fs.readFile(RESULT_FILE, "utf8");
+      const parsed = JSON.parse(data);
+      if (requestId && parsed.request_id === requestId) {
+        return data;
+      }
+      const watchStat = await fs.stat(watchFilePath);
+      if (parsed.timestamp >= watchStat.mtimeMs / 1000 - 1) {
+        return data;
+      }
+    } catch {
+      // Result file not ready yet
+    }
+  }
+  return null;
+}
+
+function normalizeObjectNames(value) {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (!name) continue;
+    if (name.length > 128) continue;
+    unique.add(name);
+  }
+  return [...unique];
+}
+
+function normalizeOptionalToken(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") {
+    throw new Error("delete_token must be a string when provided");
+  }
+  const token = value.trim();
+  if (!token) return "";
+  if (!/^[A-Za-z0-9_-]{4,64}$/.test(token)) {
+    throw new Error("delete_token format is invalid");
+  }
+  return token;
+}
+
+function buildDeleteScript(objectNames, deleteToken, requestId = "") {
+  const quotedNames = objectNames.map((n) => JSON.stringify(n)).join(", ");
+  const directive = `# DEL:${objectNames.join(",")}`;
+  const tokenDirective = deleteToken ? `\n# DELETE_TOKEN:${deleteToken}` : "";
+  const requestDirective = requestId ? `\n# MCP_REQUEST_ID:${requestId}` : "";
+
+  return `${directive}${tokenDirective}${requestDirective}
+import bpy
+
+target_names = [${quotedNames}]
+missing = []
+deleted = []
+
+for _name in target_names:
+    _obj = bpy.data.objects.get(_name)
+    if _obj is None:
+        missing.append(_name)
+        continue
+    bpy.data.objects.remove(_obj, do_unlink=True)
+    deleted.append(_name)
+
+if missing:
+    print("Delete skipped (not found): " + ", ".join(missing))
+`;
+}
+
+function stampCodeWithRequestId(code, requestId) {
+  return `# MCP_REQUEST_ID:${requestId}\n${code}`;
 }
 
 function parseAllowedOrigins() {

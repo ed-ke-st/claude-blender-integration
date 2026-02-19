@@ -16,6 +16,8 @@ import math
 import json
 import os
 import time
+import re
+import secrets
 import urllib.request
 import urllib.error
 
@@ -38,7 +40,8 @@ def check_and_execute_file():
             continue
 
         try:
-            current_modified_time = os.path.getmtime(path)
+            # Use nanosecond precision so rapid consecutive writes are detected.
+            current_modified_time = os.stat(path).st_mtime_ns
 
             if current_modified_time > last_modified_times[source]:
                 last_modified_times[source] = current_modified_time
@@ -102,10 +105,18 @@ def _obj_info(obj):
 
 def write_result(status, message, created=None, model_name=None, code=None):
     """Write execution result to JSON file for MCP server to read."""
+    request_id = None
+    code_text = code or ""
+    request_match = re.search(r"MCP_REQUEST_ID:([A-Za-z0-9_-]+)", code_text)
+    if request_match:
+        request_id = request_match.group(1).strip()
+
     result = {
         "status": status,
         "message": message,
         "timestamp": time.time(),
+        "execution_id": time.time_ns(),
+        "request_id": request_id,
         "model": model_name,
         "last_code": code,
         "objects_created": created or [],
@@ -119,11 +130,54 @@ def write_result(status, message, created=None, model_name=None, code=None):
         print(f"Failed to write result file: {e}")
 
 
+def parse_delete_directives(code):
+    """Parse explicit delete directives from generated code comments.
+
+    Supported format:
+    - DELETE:[ObjectA,ObjectB]
+    - DEL:ObjectA
+    - DEL:ObjectA,ObjectB
+    - DELETE_TOKEN:abcdef12
+    """
+    allowed_names = set()
+    token = None
+
+    for block in re.findall(r"DELETE:\[([^\]]*)\]", code or ""):
+        for raw_name in block.split(","):
+            name = raw_name.strip()
+            if name:
+                allowed_names.add(name)
+
+    # Simple shorthand: DEL:ObjectName or DEL:NameA,NameB
+    for value in re.findall(r"DEL:([^\n\r#]+)", code or ""):
+        for raw_name in value.split(","):
+            name = raw_name.strip()
+            if name:
+                allowed_names.add(name)
+
+    token_match = re.search(r"DELETE_TOKEN:([A-Za-z0-9_-]+)", code or "")
+    if token_match:
+        token = token_match.group(1).strip()
+
+    return allowed_names, token
+
+
+def _is_generated_object(obj):
+    """Return True if object belongs to an auto-generated collection."""
+    return any(col.name.startswith("Generated — ") for col in obj.users_collection)
+
+
 def execute_blender_code(code, scene=None, model_name=None):
     """Execute generated code in Blender context, moving new objects to a model collection.
     Rolls back if existing objects are deleted."""
     objects_before = set(bpy.data.objects)
     names_before = {o.name for o in objects_before}
+    # Capture delete authorization state before running generated code so code
+    # cannot self-authorize by mutating scene properties during execution.
+    armed_before = bool(scene and getattr(scene, "claude_delete_armed", False))
+    token_before = (getattr(scene, "claude_delete_token", "") if scene else "").strip()
+    trusted_delete_before = bool(scene and getattr(scene, "claude_delete_trusted_session", False))
+    deleted_names = []
 
     # Save undo state so we can roll back destructive code
     bpy.ops.ed.undo_push(message="Before AI code execution")
@@ -139,11 +193,64 @@ def execute_blender_code(code, scene=None, model_name=None):
     names_after = {o.name for o in bpy.data.objects}
     deleted = names_before - names_after
     if deleted:
-        bpy.ops.ed.undo()
-        msg = (f"Generated code deleted existing objects ({', '.join(sorted(deleted))}). "
-               "Execution was rolled back.")
-        write_result("rolled_back", msg, model_name=model_name, code=code)
-        raise RuntimeError(msg)
+        locked_names = {o.name for o in objects_before if o.get("claude_locked")}
+        deleted_locked = deleted & locked_names
+        allowed_delete_names, provided_token = parse_delete_directives(code)
+        armed = armed_before
+        expected_token = token_before
+
+        delete_ok = (
+            armed
+            and bool(provided_token)
+            and bool(expected_token)
+            and provided_token == expected_token
+            and deleted.issubset(allowed_delete_names)
+            and not deleted_locked
+        )
+
+        deleted_generated_only = all(
+            _is_generated_object(o) for o in objects_before if o.name in deleted
+        )
+        delete_ok_trusted = (
+            trusted_delete_before
+            and bool(allowed_delete_names)
+            and deleted.issubset(allowed_delete_names)
+            and not deleted_locked
+            and deleted_generated_only
+        )
+
+        if not (delete_ok or delete_ok_trusted):
+            bpy.ops.ed.undo()
+            details = []
+            if deleted_locked:
+                details.append(
+                    f"locked objects were targeted ({', '.join(sorted(deleted_locked))})"
+                )
+            if not armed and not trusted_delete_before:
+                details.append("delete mode is not armed")
+            elif armed and provided_token != expected_token:
+                details.append("DELETE_TOKEN mismatch or missing")
+            if trusted_delete_before and not deleted_generated_only:
+                details.append("trusted session allows deleting generated objects only")
+            if not deleted.issubset(allowed_delete_names):
+                extra = deleted - allowed_delete_names
+                details.append(
+                    f"deleted objects not explicitly listed in DELETE:[...] or DEL:... ({', '.join(sorted(extra))})"
+                )
+            detail_text = "; ".join(details) if details else "authorization failed"
+            msg = (
+                f"Generated code deleted existing objects ({', '.join(sorted(deleted))}). "
+                f"Execution was rolled back: {detail_text}."
+            )
+            write_result("rolled_back", msg, model_name=model_name, code=code)
+            raise RuntimeError(msg)
+
+        # One-time authorization: clear arm/token after successful authorized delete
+        if scene and delete_ok:
+            scene.claude_delete_armed = False
+            scene.claude_delete_token = ""
+
+        deleted_names = sorted(deleted)
 
     new_objects = [o for o in bpy.data.objects if o not in objects_before]
     new_names = [o.name for o in new_objects]
@@ -151,8 +258,14 @@ def execute_blender_code(code, scene=None, model_name=None):
         col = get_or_create_collection(f"Generated — {model_name}")
         move_objects_to_collection(new_objects, col)
 
-    write_result("success", f"Created {len(new_names)} object(s)",
-                 created=new_names, model_name=model_name, code=code)
+    if deleted_names:
+        msg = f"Deleted {len(deleted_names)} object(s): {', '.join(deleted_names)}"
+        if new_names:
+            msg += f" | Created {len(new_names)} object(s)"
+        write_result("success", msg, created=new_names, model_name=model_name, code=code)
+    else:
+        write_result("success", f"Created {len(new_names)} object(s)",
+                     created=new_names, model_name=model_name, code=code)
 
 
 def strip_code_fences(text):
@@ -398,6 +511,49 @@ class CLAUDE_OT_unlock_generated(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CLAUDE_OT_arm_delete_once(bpy.types.Operator):
+    """Arm one-time authorized deletion for AI-generated code"""
+    bl_idname = "claude.arm_delete_once"
+    bl_label = "Arm Delete (One-Time)"
+
+    def execute(self, context):
+        scene = context.scene
+        token = secrets.token_hex(4)
+        scene.claude_delete_token = token
+        scene.claude_delete_armed = True
+        context.window_manager.clipboard = token
+        self.report({'WARNING'}, f"Delete armed once. Token copied: {token}")
+        return {'FINISHED'}
+
+
+class CLAUDE_OT_disarm_delete(bpy.types.Operator):
+    """Disarm authorized deletion and clear token"""
+    bl_idname = "claude.disarm_delete"
+    bl_label = "Disarm Delete"
+
+    def execute(self, context):
+        scene = context.scene
+        scene.claude_delete_armed = False
+        scene.claude_delete_token = ""
+        self.report({'INFO'}, "Delete disarmed")
+        return {'FINISHED'}
+
+
+class CLAUDE_OT_toggle_trusted_delete_session(bpy.types.Operator):
+    """Toggle trusted delete session mode for generated objects"""
+    bl_idname = "claude.toggle_trusted_delete_session"
+    bl_label = "Toggle Trusted Delete Session"
+
+    def execute(self, context):
+        scene = context.scene
+        scene.claude_delete_trusted_session = not scene.claude_delete_trusted_session
+        if scene.claude_delete_trusted_session:
+            self.report({'WARNING'}, "Trusted delete session enabled (generated objects only)")
+        else:
+            self.report({'INFO'}, "Trusted delete session disabled")
+        return {'FINISHED'}
+
+
 # Example Operator 3: Claude-Assisted Generation
 class CLAUDE_OT_generate_from_prompt(bpy.types.Operator):
     """Generate geometry from text description using Claude"""
@@ -619,7 +775,27 @@ class CLAUDE_PT_modeling_panel(bpy.types.Panel):
         row = box2.row(align=True)
         row.operator("claude.lock_generated", icon='LOCKED', text="Lock Selected")
         row.operator("claude.unlock_generated", icon='UNLOCKED', text="Unlock Selected")
-        box2.label(text="Lock objects to prevent deletion", icon='INFO')
+        box2.label(text="Locked objects can never be deleted by AI code", icon='INFO')
+
+        delete_box = box.box()
+        delete_box.label(text="Controlled Delete:", icon='TRASH')
+        row = delete_box.row(align=True)
+        row.operator("claude.arm_delete_once", icon='KEYINGSET', text="Arm One-Time Delete")
+        row.operator("claude.disarm_delete", icon='CANCEL', text="Disarm")
+        session_row = delete_box.row(align=True)
+        session_label = "Disable Trusted Session" if scene.claude_delete_trusted_session else "Enable Trusted Session"
+        session_icon = 'LOCKED' if scene.claude_delete_trusted_session else 'UNLOCKED'
+        session_row.operator("claude.toggle_trusted_delete_session", icon=session_icon, text=session_label)
+        if scene.claude_delete_armed:
+            delete_box.label(text="Delete mode armed for one execution", icon='ERROR')
+            delete_box.label(text=f"Token: {scene.claude_delete_token}", icon='KEYTYPE_KEYFRAME_VEC')
+            delete_box.label(text="Require: DELETE:[Name] or DEL:Name + DELETE_TOKEN:<token>", icon='INFO')
+        elif scene.claude_delete_trusted_session:
+            delete_box.label(text="Trusted session active (no token needed)", icon='ERROR')
+            delete_box.label(text="Still requires DELETE:[...] or DEL:... in code", icon='INFO')
+            delete_box.label(text="Only objects in Generated — collections can be deleted", icon='INFO')
+        else:
+            delete_box.label(text="Default deny: any deletion is rolled back", icon='INFO')
         
         layout.separator()
         
@@ -761,6 +937,24 @@ def register_properties():
         default=""
     )
 
+    bpy.types.Scene.claude_delete_armed = bpy.props.BoolProperty(
+        name="Delete Armed",
+        description="Allow one authorized AI deletion pass",
+        default=False
+    )
+
+    bpy.types.Scene.claude_delete_token = bpy.props.StringProperty(
+        name="Delete Token",
+        description="One-time token required for authorized AI deletion",
+        default=""
+    )
+
+    bpy.types.Scene.claude_delete_trusted_session = bpy.props.BoolProperty(
+        name="Trusted Delete Session",
+        description="Allow explicit deletion of generated objects without one-time token",
+        default=False
+    )
+
 
 def unregister_properties():
     del bpy.types.Scene.claude_file_watcher_enabled
@@ -773,6 +967,9 @@ def unregister_properties():
     del bpy.types.Scene.claude_openai_api_key
     del bpy.types.Scene.claude_openai_model
     del bpy.types.Scene.claude_openai_context
+    del bpy.types.Scene.claude_delete_armed
+    del bpy.types.Scene.claude_delete_token
+    del bpy.types.Scene.claude_delete_trusted_session
 
 
 # Registration
@@ -782,6 +979,9 @@ classes = (
     CLAUDE_OT_toggle_file_watcher,
     CLAUDE_OT_lock_generated,
     CLAUDE_OT_unlock_generated,
+    CLAUDE_OT_arm_delete_once,
+    CLAUDE_OT_disarm_delete,
+    CLAUDE_OT_toggle_trusted_delete_session,
     CLAUDE_OT_clear_error,
     CLAUDE_OT_show_error,
     CLAUDE_OT_generate_from_prompt,

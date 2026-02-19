@@ -8,7 +8,8 @@
     "start": "node index.js",
     "start:stdio": "MCP_TRANSPORT=stdio node index.js",
     "start:http": "MCP_TRANSPORT=http node index.js",
-    "openai:generate": "node openai-bridge.js generate"
+    "openai:generate": "node openai-bridge.js generate",
+    "smoke:tools": "node scripts/smoke-tools.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
