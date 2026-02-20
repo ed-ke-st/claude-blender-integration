@@ -14,10 +14,12 @@ const claudeConfigPath = path.join(os.homedir(), 'Library', 'Application Support
 const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
 const blenderScriptsRoot = path.join(os.homedir(), 'Library', 'Application Support', 'Blender');
 const blenderAppPath = '/Applications/Blender.app';
-const tmpRoot = '/tmp';
+// Use the OS per-user temp dir — avoids EACCES collisions when multiple macOS
+// users run the app (sticky bit on /tmp prevents cross-user file writes).
+const tmpRoot = os.tmpdir();
 const tmpReadLimitBytes = 300 * 1024;
-const blenderClaudeWatchFile = '/tmp/blender_claude_execute.py';
-const blenderResultFile = '/tmp/blender_result.json';
+const blenderClaudeWatchFile = path.join(tmpRoot, 'blender_claude_execute.py');
+const blenderResultFile = path.join(tmpRoot, 'blender_result.json');
 
 let mainWindow = null;
 let serverProcess = null;

@@ -15,6 +15,7 @@ import random
 import math
 import json
 import os
+import tempfile
 import time
 import re
 import secrets
@@ -22,12 +23,16 @@ import urllib.request
 import urllib.error
 
 
+# Use the OS-assigned per-user temp directory so multiple macOS users
+# don't collide on the same /tmp files (sticky bit prevents cross-user writes).
+_TMPDIR = tempfile.gettempdir()
+
 # File watching globals — one watch file per AI source
 WATCH_FILES = {
-    "claude": "/tmp/blender_claude_execute.py",
-    "openai": "/tmp/blender_openai_execute.py",
+    "claude": os.path.join(_TMPDIR, "blender_claude_execute.py"),
+    "openai": os.path.join(_TMPDIR, "blender_openai_execute.py"),
 }
-RESULT_FILE = "/tmp/blender_result.json"
+RESULT_FILE = os.path.join(_TMPDIR, "blender_result.json")
 # Keep the legacy path as an alias so old MCP configs still work
 WATCH_FILE_PATH = WATCH_FILES["claude"]
 last_modified_times = {key: 0 for key in WATCH_FILES}
