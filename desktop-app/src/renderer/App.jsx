@@ -72,6 +72,7 @@ export function App() {
 
   const [busy, setBusy] = useState({});
 
+  const [installState, setInstallState] = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(() => !readOnboardingComplete());
   const [guideStep, setGuideStep] = useState(0);
   const [guideMessage, setGuideMessage] = useState('');
@@ -135,6 +136,13 @@ export function App() {
       setServerLogs((current) => (current ? `${current}\n${line}` : line));
     });
 
+    const unsubInstall = api.onInstallState((state) => {
+      setInstallState(state);
+      if (!state.installing && !state.error) {
+        setTimeout(() => setInstallState(null), 3000);
+      }
+    });
+
     refreshSetupStatus().catch((error) => {
       setSetupStatus(String(error.message || error));
     });
@@ -145,6 +153,7 @@ export function App() {
 
     return () => {
       unsubscribe();
+      unsubInstall();
     };
   }, [api]);
 
@@ -182,9 +191,25 @@ export function App() {
 
   const setupChecks = setupData?.checks;
 
+  const installBanner = installState && (
+    <div className={`install-banner${installState.error ? ' error' : ''}`}>
+      {installState.installing && <span className="install-spinner" />}
+      <span>
+        {installState.installing && 'Installing MCP server dependencies — this only runs once…'}
+        {!installState.installing && !installState.error && 'Dependencies installed successfully.'}
+        {installState.error && `Dependency install failed: ${installState.error}`}
+      </span>
+      {!installState.installing && (
+        <button className="ghost" onClick={() => setInstallState(null)}>Dismiss</button>
+      )}
+    </div>
+  );
+
   if (showOnboarding) {
     return (
-      <main className="onboarding-layout">
+      <>
+        {installBanner}
+        <main className="onboarding-layout">
         <section className="onboarding-hero">
           <div className="title-with-icon">
             <img src={appIcon} alt="" className="app-title-icon" />
@@ -399,11 +424,14 @@ export function App() {
           </div>
         </section>
       </main>
+      </>
     );
   }
 
   return (
-    <main>
+    <>
+      {installBanner}
+      <main>
       <header className="app-header">
         <div className="title-with-icon">
           <img src={appIcon} alt="" className="app-title-icon" />
@@ -737,5 +765,6 @@ export function App() {
         </div>
       </section>
     </main>
+    </>
   );
 }

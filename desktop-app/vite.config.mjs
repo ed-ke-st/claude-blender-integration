@@ -13,6 +13,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  base: './',
   build: {
     outDir: path.resolve(__dirname, 'dist/renderer'),
     emptyOutDir: true,

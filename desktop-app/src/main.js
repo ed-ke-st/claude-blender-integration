@@ -42,6 +42,37 @@ function sendLog(message) {
   mainWindow.webContents.send('server-log', `${new Date().toISOString()} ${message}`);
 }
 
+function sendInstallState(state) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('install-state', state);
+}
+
+async function autoInstallDeps() {
+  if (await fileExists(path.join(mcpServerDir, 'node_modules'))) return;
+
+  sendInstallState({ installing: true, error: null });
+  sendLog('First run: installing MCP server dependencies...');
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn('npm', ['install'], { cwd: mcpServerDir, shell: false });
+      child.stdout.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
+      child.stderr.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`npm install exited with code ${code}`));
+      });
+      child.on('error', reject);
+    });
+    sendLog('MCP server dependencies installed successfully.');
+    sendInstallState({ installing: false, error: null });
+  } catch (error) {
+    const msg = String(error.message || error);
+    sendLog(`Dependency install failed: ${msg}`);
+    sendInstallState({ installing: false, error: msg });
+  }
+}
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -380,6 +411,10 @@ function createWindow() {
   }
 
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'));
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    autoInstallDeps().catch((err) => sendLog(`Auto-install error: ${err.message || err}`));
+  });
 }
 
 ipcMain.handle('setup:check', async () => checkSetupStatus());

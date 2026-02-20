@@ -21,4 +21,9 @@ contextBridge.exposeInMainWorld('launcherApi', {
     ipcRenderer.on('server-log', handler);
     return () => ipcRenderer.removeListener('server-log', handler);
   },
+  onInstallState: (callback) => {
+    const handler = (_event, state) => callback(state);
+    ipcRenderer.on('install-state', handler);
+    return () => ipcRenderer.removeListener('install-state', handler);
+  },
 });

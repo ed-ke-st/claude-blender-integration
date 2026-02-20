@@ -35,7 +35,19 @@
     "files": [
       "src/**/*",
       "dist/renderer/**/*",
+      "build/icons/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../mcp-server",
+        "to": "mcp-server",
+        "filter": ["**/*", "!node_modules/**", "!.git/**"]
+      },
+      {
+        "from": "../blender-addon",
+        "to": "blender-addon"
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
