@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import process from "node:process";
 import OpenAI from "openai";
 
-const DEFAULT_WATCH_FILE = "/tmp/blender_auto_execute.py";
+const DEFAULT_WATCH_FILE = join(tmpdir(), "blender_auto_execute.py");
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
 function printUsage() {
