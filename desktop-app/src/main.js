@@ -270,7 +270,7 @@ async function restoreLatestConfigBackup(kind, targetPath) {
 function ensureTmpPath(candidatePath) {
   const resolved = path.resolve(candidatePath);
   if (resolved !== tmpRoot && !resolved.startsWith(`${tmpRoot}${path.sep}`)) {
-    throw new Error('Only /tmp files can be read.');
+    throw new Error('Only temp directory files can be read.');
   }
   return resolved;
 }

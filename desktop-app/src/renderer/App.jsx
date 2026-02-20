@@ -59,7 +59,7 @@ export function App() {
   const [configStatus, setConfigStatus] = useState('Click a button to write/update config files.');
   const [serverStatus, setServerStatus] = useState('Server stopped.');
   const [serverLogs, setServerLogs] = useState('');
-  const [tmpStatus, setTmpStatus] = useState('Click "Refresh /tmp Files" to load watched artifacts.');
+  const [tmpStatus, setTmpStatus] = useState('Click "Refresh Temp Files" to load watched artifacts.');
   const [tmpContent, setTmpContent] = useState('');
   const [tmpFiles, setTmpFiles] = useState([]);
   const [selectedTmpFile, setSelectedTmpFile] = useState('');
@@ -117,7 +117,7 @@ export function App() {
   const refreshTmpFiles = async () => {
     const files = await api.listTmpFiles();
     setTmpFiles(files);
-    setTmpStatus(`Found ${files.length} relevant files in /tmp.`);
+    setTmpStatus(`Found ${files.length} relevant files in temp dir.`);
     if (!files.length) {
       setSelectedTmpFile('');
       return files;
@@ -148,7 +148,7 @@ export function App() {
     });
 
     refreshTmpFiles().catch((error) => {
-      setTmpStatus(`Failed to list /tmp files:\n${String(error.message || error)}`);
+      setTmpStatus(`Failed to list temp files:\n${String(error.message || error)}`);
     });
 
     return () => {
@@ -369,7 +369,7 @@ export function App() {
                     {statusPill(setupChecks?.serverRunning, 'Running', 'Stopped')}
                   </div>
                   <div className="check-item">
-                    <span>Relevant files detected in /tmp</span>
+                    <span>Watch files detected in temp dir</span>
                     {statusPill(tmpFiles.length > 0, 'Detected', 'Not yet')}
                   </div>
                 </div>
@@ -682,7 +682,7 @@ export function App() {
       <section className="card">
         <div className="section-title">
           <span className="section-number">4</span>
-          <h2>/tmp Inspector</h2>
+          <h2>Temp File Inspector</h2>
         </div>
         <div className="card-content">
           <div className="actions">
@@ -692,11 +692,11 @@ export function App() {
                 try {
                   await refreshTmpFiles();
                 } catch (error) {
-                  setTmpStatus(`Failed to list /tmp files:\n${String(error.message || error)}`);
+                  setTmpStatus(`Failed to list temp files:\n${String(error.message || error)}`);
                 }
               })}
             >
-              Refresh /tmp Files
+              Refresh Temp Files
             </button>
             <button
               disabled={Boolean(busy.tmpOpen)}
@@ -762,10 +762,10 @@ export function App() {
             </button>
           </div>
           <label>
-            Relevant /tmp file
+            Relevant temp file
             <select value={selectedTmpFile} onChange={(event) => setSelectedTmpFile(event.target.value)}>
               {tmpFiles.length === 0 && (
-                <option value="">No relevant files found in /tmp</option>
+                <option value="">No relevant files found in temp dir</option>
               )}
               {tmpFiles.map((file) => (
                 <option key={file.path} value={file.path}>
