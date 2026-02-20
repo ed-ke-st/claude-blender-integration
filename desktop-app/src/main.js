@@ -67,6 +67,19 @@ async function resolveToolPath(tool) {
   return tool;
 }
 
+// Build an env that prepends the resolved tool's bin directory to PATH so that
+// npm scripts (which use #!/usr/bin/env node internally) can find their sibling
+// node binary even when Electron's inherited PATH is minimal.
+async function envWithToolPath(tool) {
+  const resolved = await resolveToolPath(tool);
+  const binDir = resolved !== tool ? path.dirname(resolved) : null;
+  const base = process.env.PATH || '';
+  const augmented = binDir && !base.split(':').includes(binDir)
+    ? `${binDir}:${base}`
+    : base;
+  return { ...process.env, PATH: augmented };
+}
+
 app.setName(appDisplayName);
 
 function resolveAppIcon() {
@@ -99,8 +112,9 @@ async function autoInstallDeps() {
 
   try {
     const npm = await resolveToolPath('npm');
+    const npmEnv = await envWithToolPath('npm');
     await new Promise((resolve, reject) => {
-      const child = spawn(npm, ['install'], { cwd: mcpServerDir, shell: false });
+      const child = spawn(npm, ['install'], { cwd: mcpServerDir, env: npmEnv, shell: false });
       child.stdout.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
       child.stderr.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
       child.on('close', (code) => {
@@ -472,7 +486,8 @@ ipcMain.handle('tmp:fetch-snapshot', async () => fetchLiveSceneSnapshot());
 ipcMain.handle('setup:install-deps', async () => {
   sendLog('Installing MCP server dependencies (npm install)...');
   const npm = await resolveToolPath('npm');
-  const result = await runCommand(npm, ['install'], { cwd: mcpServerDir });
+  const npmEnv = await envWithToolPath('npm');
+  const result = await runCommand(npm, ['install'], { cwd: mcpServerDir, env: npmEnv });
   sendLog('Dependencies installed.');
   return result.stdout || 'Dependencies installed.';
 });
@@ -566,9 +581,10 @@ ipcMain.handle('server:start', async (_event, options = {}) => {
   }
 
   const node = await resolveToolPath('node');
+  const nodeEnv = await envWithToolPath('node');
   serverProcess = spawn(node, [mcpServerEntrypoint], {
     cwd: mcpServerDir,
-    env,
+    env: { ...nodeEnv, ...env },
     shell: false,
   });
 
