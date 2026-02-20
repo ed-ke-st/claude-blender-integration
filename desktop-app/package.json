@@ -11,7 +11,7 @@
     "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "build:renderer": "vite build",
     "pack:mac": "npm run build:renderer && electron-builder --mac",
-    "pack:mac:unsigned": "npm run build:renderer && electron-builder --mac --config.mac.identity=null"
+    "pack:mac:unsigned": "npm run build:renderer && electron-builder --mac --config.mac.identity=null --config.mac.hardenedRuntime=false --config.mac.entitlements=null --config.mac.entitlementsInherit=null"
   },
   "dependencies": {
     "react": "^18.3.1",
