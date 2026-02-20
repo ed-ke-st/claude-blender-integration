@@ -23,6 +23,50 @@ let mainWindow = null;
 let serverProcess = null;
 const appDisplayName = 'Blender MCP Launcher';
 
+// Electron only inherits the minimal system PATH (/usr/bin:/bin etc.), so npm/node
+// installed via NVM, Homebrew, or other managers won't be found with shell: false.
+// Resolve the real path once by asking a login shell, then cache it.
+const toolPathCache = {};
+
+async function resolveToolPath(tool) {
+  if (toolPathCache[tool]) return toolPathCache[tool];
+
+  const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash'].filter(Boolean);
+  for (const shell of shells) {
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(shell, ['-l', '-c', `which ${tool}`], { env: process.env });
+        let out = '';
+        child.stdout.on('data', (d) => { out += d.toString(); });
+        child.on('close', (code) => (code === 0 ? resolve(out.trim()) : reject()));
+        child.on('error', reject);
+      });
+      if (result && fsSync.existsSync(result)) {
+        toolPathCache[tool] = result;
+        return result;
+      }
+    } catch {
+      // try next shell
+    }
+  }
+
+  // Fall back to common install locations
+  const fallbacks = {
+    npm: ['/opt/homebrew/bin/npm', '/usr/local/bin/npm', '/usr/bin/npm'],
+    node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
+  };
+  for (const candidate of (fallbacks[tool] || [])) {
+    if (fsSync.existsSync(candidate)) {
+      toolPathCache[tool] = candidate;
+      return candidate;
+    }
+  }
+
+  // Last resort: hope it's on PATH
+  toolPathCache[tool] = tool;
+  return tool;
+}
+
 app.setName(appDisplayName);
 
 function resolveAppIcon() {
@@ -54,8 +98,9 @@ async function autoInstallDeps() {
   sendLog('First run: installing MCP server dependencies...');
 
   try {
+    const npm = await resolveToolPath('npm');
     await new Promise((resolve, reject) => {
-      const child = spawn('npm', ['install'], { cwd: mcpServerDir, shell: false });
+      const child = spawn(npm, ['install'], { cwd: mcpServerDir, shell: false });
       child.stdout.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
       child.stderr.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
       child.on('close', (code) => {
@@ -366,7 +411,8 @@ async function checkSetupStatus() {
   };
 
   try {
-    const result = await runCommand('node', ['--version']);
+    const node = await resolveToolPath('node');
+    const result = await runCommand(node, ['--version']);
     status.checks.nodeInstalled = true;
     status.details.nodeVersion = result.stdout.trim();
   } catch (error) {
@@ -425,7 +471,8 @@ ipcMain.handle('tmp:fetch-snapshot', async () => fetchLiveSceneSnapshot());
 
 ipcMain.handle('setup:install-deps', async () => {
   sendLog('Installing MCP server dependencies (npm install)...');
-  const result = await runCommand('npm', ['install'], { cwd: mcpServerDir });
+  const npm = await resolveToolPath('npm');
+  const result = await runCommand(npm, ['install'], { cwd: mcpServerDir });
   sendLog('Dependencies installed.');
   return result.stdout || 'Dependencies installed.';
 });
@@ -518,7 +565,8 @@ ipcMain.handle('server:start', async (_event, options = {}) => {
     }
   }
 
-  serverProcess = spawn('node', [mcpServerEntrypoint], {
+  const node = await resolveToolPath('node');
+  serverProcess = spawn(node, [mcpServerEntrypoint], {
     cwd: mcpServerDir,
     env,
     shell: false,
