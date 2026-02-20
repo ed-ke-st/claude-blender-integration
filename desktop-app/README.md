@@ -2,6 +2,18 @@
 
 Desktop control panel for this integration so users do not need to run setup commands manually.
 
+On first launch, the app opens a guided onboarding wizard with step-by-step setup actions.
+
+## App name and icon branding
+
+The packaged app name is set by `build.productName` in `package.json`:
+- `Blender MCP Launcher`
+
+To replace the default Electron icon, add files to:
+- `desktop-app/build/icons/icon.png` (runtime/dev window + mac packaging + mac dock)
+- `desktop-app/build/icons/icon.ico` (Windows packaging)
+- `desktop-app/build/icons/icon.svg` (editable source used to generate PNG/ICO)
+
 ## What it does
 
 - Checks local prerequisites (Node, Blender app, addon/config presence)
@@ -25,6 +37,14 @@ From repo root:
 ```bash
 cd desktop-app
 npm install
+npm run dev
+```
+
+For a production-style local run:
+
+```bash
+cd desktop-app
+npm run build:renderer
 npm start
 ```
 
@@ -36,6 +56,34 @@ npm run pack:mac
 ```
 
 Output will be under `desktop-app/dist/`.
+This now produces both `.dmg` and `.zip` artifacts.
+
+## End-user install without terminal (no Apple Developer account required)
+
+You can distribute the files from `desktop-app/dist/` directly (for example via GitHub Releases).
+
+Recommended artifact:
+- `.zip` (simple download + drag app to Applications)
+
+Alternative artifact:
+- `.dmg` (traditional Mac installer style)
+
+Unsigned app first-open on macOS:
+1. User downloads and opens the `.zip` or `.dmg`.
+2. User drags `Blender MCP Launcher.app` to `Applications`.
+3. First launch: right-click app in `Applications` -> `Open`.
+4. Click `Open` in the security prompt.
+
+After that first approval, launches are normal (double-click).
+
+## Automated release artifacts (GitHub Actions)
+
+This repo includes a release workflow at:
+- `.github/workflows/desktop-app-release.yml`
+
+Behavior:
+- On GitHub Release publish: builds unsigned macOS `.dmg` + `.zip` and attaches them to the release.
+- On manual run (`workflow_dispatch`): builds the same files and uploads them as workflow artifacts.
 
 ## Signing + Notarization
 

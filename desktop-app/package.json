@@ -6,32 +6,54 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dev": "electron .",
-    "pack:mac": "electron-builder --mac",
-    "pack:mac:unsigned": "electron-builder --mac --config.mac.identity=null"
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "build:renderer": "vite build",
+    "pack:mac": "npm run build:renderer && electron-builder --mac",
+    "pack:mac:unsigned": "npm run build:renderer && electron-builder --mac --config.mac.identity=null"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
     "@electron/notarize": "^2.5.0",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
     "electron": "^31.0.2",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "vite": "^6.2.1",
+    "wait-on": "^8.0.3"
   },
   "build": {
     "appId": "com.edward.blenderlauncher",
     "productName": "Blender MCP Launcher",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "afterSign": "build/notarize.js",
     "files": [
       "src/**/*",
+      "dist/renderer/**/*",
       "package.json"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
+      "icon": "build/icons/icon.png",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "win": {
+      "icon": "build/icons/icon.ico"
+    },
+    "linux": {
+      "icon": "build/icons"
     }
   }
 }

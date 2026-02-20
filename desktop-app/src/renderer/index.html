@@ -4,85 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Blender MCP Launcher</title>
-    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <h1>Blender MCP Launcher</h1>
-        <p>Mac control panel for setup, configuration, and MCP server runtime.</p>
-      </header>
-
-      <section class="card">
-        <h2>1) Setup Checks</h2>
-        <div class="actions">
-          <button id="check-setup">Refresh Status</button>
-          <button id="launch-blender">Launch Blender</button>
-          <button id="install-deps">Install MCP Dependencies</button>
-          <button id="install-addon">Install Blender Addon</button>
-        </div>
-        <pre id="setup-status" class="status-box">Run "Refresh Status" to inspect your environment.</pre>
-      </section>
-
-      <section class="card">
-        <h2>2) Configure Hosts</h2>
-        <div class="actions">
-          <button id="configure-claude">Configure Claude Desktop</button>
-          <button id="restore-claude">Restore Claude Backup</button>
-          <button id="configure-codex">Configure Codex</button>
-          <button id="restore-codex">Restore Codex Backup</button>
-        </div>
-        <pre id="config-status" class="status-box">Click a button to write/update config files.</pre>
-      </section>
-
-      <section class="card">
-        <h2>3) Server Control</h2>
-        <div class="server-form">
-          <label>
-            Transport
-            <select id="transport">
-              <option value="stdio">stdio (Claude/Codex)</option>
-              <option value="http">http (ChatGPT connector)</option>
-            </select>
-          </label>
-          <label>
-            Host
-            <input id="host" value="127.0.0.1" />
-          </label>
-          <label>
-            Port
-            <input id="port" value="3030" />
-          </label>
-          <label>
-            Auth Token (optional)
-            <input id="auth-token" placeholder="MCP_AUTH_TOKEN" />
-          </label>
-        </div>
-        <div class="actions">
-          <button id="start-server">Start Server</button>
-          <button id="stop-server" class="danger">Stop Server</button>
-        </div>
-        <pre id="server-status" class="status-box">Server stopped.</pre>
-        <pre id="server-logs" class="log-box"></pre>
-      </section>
-
-      <section class="card">
-        <h2>4) /tmp Inspector</h2>
-        <div class="actions">
-          <button id="tmp-refresh">Refresh /tmp Files</button>
-          <button id="tmp-open">Open Selected File</button>
-          <button id="tmp-fetch-snapshot">Fetch Scene Snapshot</button>
-          <button id="tmp-reset-result" class="danger">Reset blender_result.json</button>
-        </div>
-        <label>
-          Relevant /tmp file
-          <select id="tmp-file-select"></select>
-        </label>
-        <pre id="tmp-status" class="status-box">Click "Refresh /tmp Files" to load watched artifacts.</pre>
-        <pre id="tmp-content" class="log-box"></pre>
-      </section>
-    </main>
-
-    <script src="renderer.js"></script>
+    <div id="root"></div>
+    <script type="module" src="./main.jsx"></script>
   </body>
 </html>

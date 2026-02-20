@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
+const fsSync = require('fs');
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
@@ -20,6 +21,17 @@ const blenderResultFile = '/tmp/blender_result.json';
 
 let mainWindow = null;
 let serverProcess = null;
+const appDisplayName = 'Blender MCP Launcher';
+
+app.setName(appDisplayName);
+
+function resolveAppIcon() {
+  const iconPng = path.join(repoRoot, 'desktop-app', 'build', 'icons', 'icon.png');
+  if (fsSync.existsSync(iconPng)) {
+    return iconPng;
+  }
+  return undefined;
+}
 
 function getBackupRoot() {
   return path.join(app.getPath('appData'), 'blender-mcp-launcher', 'backups');
@@ -345,12 +357,15 @@ async function checkSetupStatus() {
 }
 
 function createWindow() {
+  const iconPath = resolveAppIcon();
+
   mainWindow = new BrowserWindow({
     width: 980,
     height: 720,
     minWidth: 840,
     minHeight: 620,
-    title: 'Blender MCP Launcher',
+    title: appDisplayName,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -358,7 +373,13 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl);
+    return;
+  }
+
+  mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'));
 }
 
 ipcMain.handle('setup:check', async () => checkSetupStatus());
@@ -499,6 +520,14 @@ ipcMain.handle('server:status', async () => ({
 }));
 
 app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock) {
+    const iconPath = resolveAppIcon();
+    if (iconPath) {
+      app.dock.setIcon(iconPath);
+    }
+  }
+});
 
 app.on('window-all-closed', () => {
   if (serverProcess) {
