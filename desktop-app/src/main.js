@@ -198,10 +198,10 @@ function tomlValue(value) {
   return JSON.stringify(value).replace(/\\/g, '\\\\');
 }
 
-function upsertCodexServerConfig(originalContent, serverPath) {
+function upsertCodexServerConfig(originalContent, serverPath, nodePath) {
   const block = [
     '[mcp_servers.blender]',
-    'command = "node"',
+    `command = ${tomlValue(nodePath)}`,
     `args = [${tomlValue(serverPath)}]`,
     'startup_timeout_sec = 20',
     'tool_timeout_sec = 60',
@@ -527,8 +527,9 @@ ipcMain.handle('config:claude', async () => {
     config.mcpServers = {};
   }
 
+  const node = await resolveToolPath('node');
   config.mcpServers.blender = {
-    command: 'node',
+    command: node,
     args: [mcpServerEntrypoint],
   };
 
@@ -545,7 +546,8 @@ ipcMain.handle('config:codex', async () => {
     ? await fs.readFile(codexConfigPath, 'utf8')
     : '';
 
-  const updated = upsertCodexServerConfig(original, mcpServerEntrypoint);
+  const node = await resolveToolPath('node');
+  const updated = upsertCodexServerConfig(original, mcpServerEntrypoint, node);
   await fs.writeFile(codexConfigPath, updated, 'utf8');
   sendLog(`Codex config updated: ${codexConfigPath}`);
   return { path: codexConfigPath, backupPath };
