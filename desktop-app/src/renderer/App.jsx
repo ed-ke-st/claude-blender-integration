@@ -191,6 +191,19 @@ export function App() {
 
   const setupChecks = setupData?.checks;
 
+  const addonActivationSteps = (
+    <div className="addon-steps">
+      <strong>After installing, activate in Blender:</strong>
+      <ol>
+        <li>Edit → Preferences → Add-ons → search <code>Cla</code><br />
+          <span className="addon-steps-hint">(If not listed, click the refresh icon next to the tag icon → "Refresh Local")</span>
+        </li>
+        <li>Enable <strong>Claude Modelling Tools</strong></li>
+        <li>Open the sidebar in the 3D Viewport <span className="addon-steps-hint">(press N)</span> → press <strong>Enable Auto-Execute</strong></li>
+      </ol>
+    </div>
+  );
+
   const installBanner = installState && (
     <div className={`install-banner${installState.error ? ' error' : ''}`}>
       {installState.installing && <span className="install-spinner" />}
@@ -275,13 +288,13 @@ export function App() {
                     Check environment
                   </button>
                   <button
-                    disabled={Boolean(busy.guideInstallDeps)}
+                    disabled={Boolean(busy.guideInstallDeps) || Boolean(installState?.installing)}
                     onClick={() => runGuideAction('guideInstallDeps', 'Server dependencies installed.', async () => {
                       await api.installDependencies();
                       await refreshSetupStatus();
                     })}
                   >
-                    Install dependencies
+                    {installState?.installing ? 'Installing…' : 'Install dependencies'}
                   </button>
                   <button
                     disabled={Boolean(busy.guideInstallAddon)}
@@ -301,6 +314,7 @@ export function App() {
                     Launch Blender
                   </button>
                 </div>
+                {addonActivationSteps}
               </>
             )}
 
@@ -477,7 +491,7 @@ export function App() {
               Launch Blender
             </button>
             <button
-              disabled={Boolean(busy.installDeps)}
+              disabled={Boolean(busy.installDeps) || Boolean(installState?.installing)}
               onClick={() => runWithBusy('installDeps', async () => {
                 try {
                   const output = await api.installDependencies();
@@ -488,7 +502,7 @@ export function App() {
                 }
               })}
             >
-              Install MCP Dependencies
+              {installState?.installing ? 'Installing…' : 'Install MCP Dependencies'}
             </button>
             <button
               disabled={Boolean(busy.installAddon)}
@@ -505,6 +519,7 @@ export function App() {
               Install Blender Addon
             </button>
           </div>
+          {addonActivationSteps}
           <pre className="status-box">{setupStatus}</pre>
         </div>
       </section>

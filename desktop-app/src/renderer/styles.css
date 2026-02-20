@@ -373,6 +373,36 @@ select {
   justify-content: space-between;
 }
 
+.addon-steps {
+  background: #f0f7ff;
+  border: 1px solid #bae0fd;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #1e3a5f;
+  margin-top: 4px;
+}
+
+.addon-steps ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.addon-steps code {
+  background: #dbeafe;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.addon-steps-hint {
+  color: #4a6fa5;
+  font-size: 12px;
+}
+
 .install-banner {
   position: sticky;
   top: 0;
