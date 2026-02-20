@@ -11,8 +11,11 @@ import {
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 
-const DEFAULT_WATCH_FILE = "/tmp/blender_claude_execute.py";
-const RESULT_FILE = "/tmp/blender_result.json";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const DEFAULT_WATCH_FILE = join(tmpdir(), "blender_claude_execute.py");
+const RESULT_FILE = join(tmpdir(), "blender_result.json");
 const WAIT_POLL_COUNT = 24;
 const WAIT_POLL_MS = 250;
 
