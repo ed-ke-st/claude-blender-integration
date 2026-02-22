@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Claude Modeling Tools",
     "author": "Eddie Stewart",
-    "version": (1, 1, 0),
+    "version": (1, 1, 1),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > Claude Tools",
     "description": "AI-assisted modeling tools with Claude integration",
@@ -26,12 +26,35 @@ import urllib.error
 # Use the OS-assigned per-user temp directory so multiple macOS users
 # don't collide on the same /tmp files (sticky bit prevents cross-user writes).
 _TMPDIR = tempfile.gettempdir()
+_TMP_REALPATH = os.path.realpath("/tmp")
+_RESULT_MIRROR_PATH = "/tmp/blender_result.json"
 
-# File watching globals — one watch file per AI source
-WATCH_FILES = {
-    "claude": os.path.join(_TMPDIR, "blender_claude_execute.py"),
-    "openai": os.path.join(_TMPDIR, "blender_openai_execute.py"),
-}
+def _build_watch_files():
+    """Build watched file map with /tmp fallback when temp dirs differ."""
+    watch_files = {
+        "claude": os.path.join(_TMPDIR, "blender_claude_execute.py"),
+        "openai": os.path.join(_TMPDIR, "blender_openai_execute.py"),
+    }
+
+    # Some MCP clients on macOS resolve tmpdir() to /tmp while Blender may use
+    # /var/folders/.../T. Watch both so either writer path is accepted.
+    if os.path.realpath(_TMPDIR) != _TMP_REALPATH:
+        watch_files["claude_tmp"] = "/tmp/blender_claude_execute.py"
+        watch_files["openai_tmp"] = "/tmp/blender_openai_execute.py"
+
+    # Avoid duplicate watchers if two paths resolve to the same real path.
+    deduped = {}
+    seen_paths = set()
+    for source, path in watch_files.items():
+        resolved = os.path.realpath(path)
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        deduped[source] = path
+    return deduped
+
+
+WATCH_FILES = _build_watch_files()
 RESULT_FILE = os.path.join(_TMPDIR, "blender_result.json")
 # Keep the legacy path as an alias so old MCP configs still work
 WATCH_FILE_PATH = WATCH_FILES["claude"]
@@ -57,8 +80,9 @@ def check_and_execute_file():
                 if code.strip():
                     try:
                         scene = bpy.context.scene
-                        model_name = source if source == "claude" else getattr(
-                            scene, 'claude_openai_model', source
+                        base_source = source[:-4] if source.endswith("_tmp") else source
+                        model_name = base_source if base_source == "claude" else getattr(
+                            scene, 'claude_openai_model', base_source
                         )
                         execute_blender_code(code, scene, model_name=model_name)
                         print(f"✓ Auto-executed code from {path} ({source})")
@@ -131,6 +155,14 @@ def write_result(status, message, created=None, model_name=None, code=None):
     try:
         with open(RESULT_FILE, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
+
+        # Mirror to /tmp for clients that resolve temp paths differently.
+        if os.path.realpath(_TMPDIR) != _TMP_REALPATH:
+            try:
+                with open(_RESULT_MIRROR_PATH, "w", encoding="utf-8") as f:
+                    json.dump(result, f, indent=2)
+            except Exception as mirror_err:
+                print(f"Failed to mirror result file to {_RESULT_MIRROR_PATH}: {mirror_err}")
     except Exception as e:
         print(f"Failed to write result file: {e}")
 
