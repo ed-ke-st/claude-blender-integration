@@ -110,6 +110,25 @@ Type: "Create a simple cube at the origin"
 **In Blender**:
 Watch the cube appear! ✨
 
+## Session-Start Prompting Guide (Blender Requests)
+
+When starting a new chat/session, use this prompt shape for fastest, most accurate results:
+
+`Create [object] in [style], size [dimensions], material [material], at [location], with [constraints/details].`
+
+Examples:
+
+- `Create a sci-fi control desk in hard-surface style, size 2m x 1m x 1m, material brushed aluminum, at world origin, with rounded edges and cable ports.`
+- `Create a low-poly pine tree in stylized cartoon style, size 4m tall, material matte green/brown, at X=3 Y=-2 Z=0, with 5 branch tiers.`
+
+If details are missing, clarify these before generation:
+
+- Dimensions
+- Material/look
+- Placement in scene
+- Style target
+- Constraints (polycount, symmetry, animation needs)
+
 ## Troubleshooting
 
 ### MCP Server Not Loading?

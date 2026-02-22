@@ -71,10 +71,20 @@ Alternative artifact:
 Unsigned app first-open on macOS:
 1. User downloads and opens the `.zip` or `.dmg`.
 2. User drags `Blender MCP Launcher.app` to `Applications`.
-3. First launch: right-click app in `Applications` -> `Open`.
-4. Click `Open` in the security prompt.
+3. User tries opening the app once from `Applications` (it may be blocked).
+4. User opens `System Settings -> Privacy & Security`.
+5. Under Security, user clicks **Open Anyway** for Blender MCP Launcher.
+6. User confirms **Open** in the follow-up prompt.
 
 After that first approval, launches are normal (double-click).
+
+DMG layout notes:
+- The DMG view is customized to show:
+  - Branded background image from `desktop-app/build/dmg/background.png`
+  - App icon
+  - `/Applications` shortcut
+  - `IMPORTANT-OPEN-FIRST.txt` with unsigned first-open instructions
+- Background art is visible in Finder Icon View (`Cmd+1`), not List/Column/Gallery views.
 
 ## Automated release artifacts (GitHub Actions)
 

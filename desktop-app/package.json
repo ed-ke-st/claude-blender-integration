@@ -1,6 +1,6 @@
 {
   "name": "blender-desktop-launcher",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Mac desktop launcher for the Claude/Codex/ChatGPT Blender MCP integration",
   "main": "src/main.js",
   "private": true,
@@ -64,6 +64,36 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "title": "${productName} ${version} (Unsigned Build)",
+      "icon": "build/icons/icon.png",
+      "background": "build/dmg/background.png",
+      "iconSize": 96,
+      "iconTextSize": 12,
+      "window": {
+        "width": 680,
+        "height": 420
+      },
+      "contents": [
+        {
+          "x": 180,
+          "y": 200
+        },
+        {
+          "x": 500,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 340,
+          "y": 330,
+          "type": "file",
+          "path": "build/dmg/UNSIGNED-APP-README.txt",
+          "name": "IMPORTANT-OPEN-FIRST.txt"
+        }
+      ]
     },
     "win": {
       "icon": "build/icons/icon.ico"
