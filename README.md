@@ -25,6 +25,29 @@ It provides one-click setup checks, dependency install, addon install, Claude/Co
 See:
 - `desktop-app/README.md`
 
+## Assistant Packs (Agents/Skills)
+
+This repo ships reusable assistant packs for Claude, Codex, and ChatGPT:
+
+- `assistant-packs/codex/skills/`
+- `assistant-packs/claude/skills/`
+- `assistant-packs/claude/sub-agents/`
+- `assistant-packs/chatgpt/project-instructions.md`
+
+Install from repo root:
+
+```bash
+./scripts/install-codex-skills.sh
+./scripts/install-claude-skills.sh
+./scripts/install-claude-subagents.sh
+```
+
+Then:
+- Codex: open a new session and run `/mcp` (and `/skills` if available)
+- Claude Code: start a new session to load skills from `~/.claude/skills/`
+- Claude sub-agents (if supported): templates are in `~/.claude/agents/`
+- ChatGPT: paste template from `assistant-packs/chatgpt/project-instructions.md` into project instructions
+
 ## Demo
 
 ```

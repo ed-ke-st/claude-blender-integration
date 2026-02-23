@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('launcherApi', {
   checkSetup: () => ipcRenderer.invoke('setup:check'),
   installDependencies: () => ipcRenderer.invoke('setup:install-deps'),
   installAddon: () => ipcRenderer.invoke('setup:install-addon'),
+  installAssistantPacks: () => ipcRenderer.invoke('setup:install-assistant-packs'),
+  exportClaudeSkillsZip: () => ipcRenderer.invoke('setup:export-claude-skills-zip'),
   launchBlender: () => ipcRenderer.invoke('app:launch-blender'),
   configureClaude: () => ipcRenderer.invoke('config:claude'),
   configureCodex: () => ipcRenderer.invoke('config:codex'),

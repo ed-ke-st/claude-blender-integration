@@ -22,6 +22,8 @@ To replace the default Electron icon, add files to:
 - Installs Blender addon to your local Blender addons path
 - Configures Claude Desktop MCP entry
 - Configures Codex MCP entry
+- Bundles assistant templates (`assistant-packs`) in packaged app resources
+- Exports a Claude Skills ZIP to `~/Downloads` for Claude app upload workflows
 - Creates automatic timestamped backups before config edits
 - Restores the latest Claude/Codex config backup with one click
 - Starts/stops MCP server in `stdio` or `http` mode
@@ -135,3 +137,24 @@ npm run pack:mac:unsigned
 - Blender addon target is auto-detected from:
   - `~/Library/Application Support/Blender/<latest-version>/scripts/addons/`
   - Falls back to `5.0` if no version folder exists yet.
+
+## Optional: Agents/Skills Templates
+
+This repository includes cross-client templates in `assistant-packs/`:
+
+- Claude sub-agents: `assistant-packs/claude/sub-agents/`
+- Codex skills: `assistant-packs/codex/skills/`
+- ChatGPT project instructions: `assistant-packs/chatgpt/project-instructions.md`
+
+Install from repo root:
+
+```bash
+./scripts/install-codex-skills.sh
+./scripts/install-claude-skills.sh
+./scripts/install-claude-subagents.sh
+```
+
+In the app UI, you can also use:
+- **Install Agents/Skills** to install local Codex/Claude templates
+- **Install Agents/Skills** also syncs Claude skills into detected local-agent session skill folders and updates each session `manifest.json`
+- **Export Claude Skills ZIP** to generate an uploadable zip in `~/Downloads`

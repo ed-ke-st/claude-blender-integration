@@ -350,6 +350,39 @@ export function App() {
                     Connect Codex
                   </button>
                   <button
+                    disabled={Boolean(busy.guideInstallAssistantPacks)}
+                    onClick={() => runGuideAction('guideInstallAssistantPacks', 'Assistant templates installed.', async () => {
+                      const result = await api.installAssistantPacks();
+                      setGuideMessage(
+                        [
+                          `Assistant templates installed.`,
+                          `Codex skills: ${result.codex.installed} -> ${result.codex.targetRoot}`,
+                          `Claude skills: ${result.claudeSkills.installed} -> ${result.claudeSkills.targetRoot}`,
+                          `Claude app local-agent copies: ${result.claudeLocalAgent.totalCopies} across ${result.claudeLocalAgent.sessionsFound} session(s)`,
+                          `Claude app manifests updated: ${result.claudeLocalAgent.manifestsUpdated}`,
+                          `Claude sub-agents: ${result.claudeSubAgents.installed} -> ${result.claudeSubAgents.targetRoot}`,
+                        ].join('\n')
+                      );
+                    })}
+                  >
+                    Install Agents/Skills
+                  </button>
+                  <button
+                    disabled={Boolean(busy.guideExportClaudeSkillsZip)}
+                    onClick={() => runGuideAction('guideExportClaudeSkillsZip', 'Claude skills ZIP exported.', async () => {
+                      const result = await api.exportClaudeSkillsZip();
+                      setGuideMessage(
+                        [
+                          'Claude skills ZIP exported.',
+                          `File: ${result.zipPath}`,
+                          `Skills included: ${result.skillsIncluded}`,
+                        ].join('\n')
+                      );
+                    })}
+                  >
+                    Export Claude Skills ZIP
+                  </button>
+                  <button
                     disabled={Boolean(busy.guideRefreshSetup2)}
                     onClick={() => runGuideAction('guideRefreshSetup2', 'Config status refreshed.', async () => {
                       await refreshSetupStatus();
@@ -592,6 +625,57 @@ export function App() {
               })}
             >
               Restore Codex Backup
+            </button>
+            <button
+              disabled={Boolean(busy.installAssistantPacks)}
+              onClick={() => runWithBusy('installAssistantPacks', async () => {
+                try {
+                  const result = await api.installAssistantPacks();
+                  setConfigStatus(
+                    [
+                      'Assistant templates installed.',
+                      '',
+                      `Codex skills: ${result.codex.installed}`,
+                      `Target: ${result.codex.targetRoot}`,
+                      '',
+                      `Claude skills: ${result.claudeSkills.installed}`,
+                      `Target: ${result.claudeSkills.targetRoot}`,
+                      '',
+                      `Claude app local-agent copies: ${result.claudeLocalAgent.totalCopies}`,
+                      `Sessions detected: ${result.claudeLocalAgent.sessionsFound}`,
+                      `Manifests updated: ${result.claudeLocalAgent.manifestsUpdated}`,
+                      '',
+                      `Claude sub-agents: ${result.claudeSubAgents.installed}`,
+                      `Target: ${result.claudeSubAgents.targetRoot}`,
+                    ].join('\n')
+                  );
+                } catch (error) {
+                  setConfigStatus(`Failed to install assistant templates:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Install Agents/Skills
+            </button>
+            <button
+              disabled={Boolean(busy.exportClaudeSkillsZip)}
+              onClick={() => runWithBusy('exportClaudeSkillsZip', async () => {
+                try {
+                  const result = await api.exportClaudeSkillsZip();
+                  setConfigStatus(
+                    [
+                      'Claude skills ZIP exported.',
+                      '',
+                      `File: ${result.zipPath}`,
+                      `Skills included: ${result.skillsIncluded}`,
+                      `Source: ${result.sourceRoot}`,
+                    ].join('\n')
+                  );
+                } catch (error) {
+                  setConfigStatus(`Failed to export Claude skills ZIP:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Export Claude Skills ZIP
             </button>
           </div>
           <pre className="status-box">{configStatus}</pre>

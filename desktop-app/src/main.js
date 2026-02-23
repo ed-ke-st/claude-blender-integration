@@ -9,9 +9,19 @@ const repoRoot = path.resolve(__dirname, '../..');
 const mcpServerDir = path.join(repoRoot, 'mcp-server');
 const mcpServerEntrypoint = path.join(mcpServerDir, 'index.js');
 const addonSource = path.join(repoRoot, 'blender-addon', 'claude_modeling_tools.py');
+const assistantPacksRepoDir = path.join(repoRoot, 'assistant-packs');
+const assistantPacksResourceDir = path.join(process.resourcesPath || '', 'assistant-packs');
 
 const claudeConfigPath = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
 const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
+const claudeLocalAgentSkillsPluginRoot = path.join(
+  os.homedir(),
+  'Library',
+  'Application Support',
+  'Claude',
+  'local-agent-mode-sessions',
+  'skills-plugin'
+);
 const blenderScriptsRoot = path.join(os.homedir(), 'Library', 'Application Support', 'Blender');
 const blenderAppPath = '/Applications/Blender.app';
 // Use the OS per-user temp dir — avoids EACCES collisions when multiple macOS
@@ -56,6 +66,7 @@ async function resolveToolPath(tool) {
   const fallbacks = {
     npm: ['/opt/homebrew/bin/npm', '/usr/local/bin/npm', '/usr/bin/npm'],
     node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
+    zip: ['/usr/bin/zip', '/opt/homebrew/bin/zip', '/usr/local/bin/zip'],
   };
   for (const candidate of (fallbacks[tool] || [])) {
     if (fsSync.existsSync(candidate)) {
@@ -104,6 +115,323 @@ function sendLog(message) {
 function sendInstallState(state) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send('install-state', state);
+}
+
+function resolveAssistantPackPath(...segments) {
+  const candidates = [
+    path.join(assistantPacksRepoDir, ...segments),
+    path.join(assistantPacksResourceDir, ...segments),
+  ];
+
+  for (const candidate of candidates) {
+    if (fsSync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Assistant pack not found: ${segments.join('/')}`);
+}
+
+async function installCodexSkillsFromPack() {
+  const sourceRoot = resolveAssistantPackPath('codex', 'skills');
+  const codexSkillsRoot = path.join(os.homedir(), '.codex', 'skills');
+  await fs.mkdir(codexSkillsRoot, { recursive: true });
+
+  const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
+  let installed = 0;
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sourceSkillFile = path.join(sourceRoot, entry.name, 'SKILL.md');
+    if (!(await fileExists(sourceSkillFile))) continue;
+
+    const targetSkillDir = path.join(codexSkillsRoot, entry.name);
+    await fs.mkdir(targetSkillDir, { recursive: true });
+    await fs.copyFile(sourceSkillFile, path.join(targetSkillDir, 'SKILL.md'));
+    installed += 1;
+  }
+
+  return {
+    installed,
+    targetRoot: codexSkillsRoot,
+  };
+}
+
+async function installClaudeSkillsFromPack() {
+  const sourceRoot = resolveAssistantPackPath('claude', 'skills');
+  const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+  await fs.mkdir(claudeSkillsRoot, { recursive: true });
+
+  const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
+  let installed = 0;
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sourceSkillFile = path.join(sourceRoot, entry.name, 'SKILL.md');
+    if (!(await fileExists(sourceSkillFile))) continue;
+
+    const targetSkillDir = path.join(claudeSkillsRoot, entry.name);
+    await fs.mkdir(targetSkillDir, { recursive: true });
+    await fs.copyFile(sourceSkillFile, path.join(targetSkillDir, 'SKILL.md'));
+    installed += 1;
+  }
+
+  return {
+    installed,
+    targetRoot: claudeSkillsRoot,
+  };
+}
+
+async function installClaudeSubAgentsFromPack() {
+  let sourceRoot;
+  try {
+    sourceRoot = resolveAssistantPackPath('claude', 'sub-agents');
+  } catch {
+    return {
+      installed: 0,
+      targetRoot: path.join(os.homedir(), '.claude', 'agents'),
+    };
+  }
+
+  const claudeAgentsRoot = path.join(os.homedir(), '.claude', 'agents');
+  await fs.mkdir(claudeAgentsRoot, { recursive: true });
+
+  const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
+  let installed = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith('.md')) continue;
+
+    const sourceFile = path.join(sourceRoot, entry.name);
+    const targetFile = path.join(claudeAgentsRoot, entry.name);
+    await fs.copyFile(sourceFile, targetFile);
+    installed += 1;
+  }
+
+  return {
+    installed,
+    targetRoot: claudeAgentsRoot,
+  };
+}
+
+async function listClaudeLocalAgentSkillsRoots() {
+  if (!(await fileExists(claudeLocalAgentSkillsPluginRoot))) {
+    return [];
+  }
+
+  const roots = [];
+  const pluginEntries = await fs.readdir(claudeLocalAgentSkillsPluginRoot, { withFileTypes: true });
+  for (const pluginEntry of pluginEntries) {
+    if (!pluginEntry.isDirectory()) continue;
+    const pluginPath = path.join(claudeLocalAgentSkillsPluginRoot, pluginEntry.name);
+    const sessionEntries = await fs.readdir(pluginPath, { withFileTypes: true });
+    for (const sessionEntry of sessionEntries) {
+      if (!sessionEntry.isDirectory()) continue;
+      const skillsPath = path.join(pluginPath, sessionEntry.name, 'skills');
+      if (await fileExists(skillsPath)) {
+        roots.push(skillsPath);
+      }
+    }
+  }
+
+  return roots;
+}
+
+function parseSkillFrontmatter(skillContent) {
+  const lines = skillContent.split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') {
+    return {};
+  }
+
+  const out = {};
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (line === '---') break;
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf(':');
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+async function readClaudeSkillMetadataFromPack() {
+  const sourceRoot = resolveAssistantPackPath('claude', 'skills');
+  const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
+  const skills = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillId = entry.name;
+    const sourceSkillFile = path.join(sourceRoot, skillId, 'SKILL.md');
+    if (!(await fileExists(sourceSkillFile))) continue;
+
+    const raw = await fs.readFile(sourceSkillFile, 'utf8');
+    const frontmatter = parseSkillFrontmatter(raw);
+    skills.push({
+      skillId,
+      name: frontmatter.name || skillId,
+      description: frontmatter.description || `${skillId} skill`,
+    });
+  }
+
+  return skills;
+}
+
+async function upsertClaudeLocalAgentManifest(sessionRoot, skillMetadata) {
+  const manifestPath = path.join(sessionRoot, 'manifest.json');
+  let manifest = {
+    lastUpdated: Date.now(),
+    skills: [],
+  };
+
+  if (await fileExists(manifestPath)) {
+    try {
+      const raw = await fs.readFile(manifestPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        manifest = {
+          ...parsed,
+          skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+        };
+      }
+    } catch {
+      manifest = {
+        lastUpdated: Date.now(),
+        skills: [],
+      };
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  for (const skill of skillMetadata) {
+    const idx = manifest.skills.findIndex((item) => item && item.skillId === skill.skillId);
+    const nextItem = {
+      skillId: skill.skillId,
+      name: skill.name,
+      description: skill.description,
+      creatorType: 'user',
+      updatedAt: nowIso,
+      enabled: true,
+    };
+
+    if (idx === -1) {
+      manifest.skills.push(nextItem);
+    } else {
+      manifest.skills[idx] = {
+        ...(manifest.skills[idx] || {}),
+        ...nextItem,
+      };
+    }
+  }
+
+  manifest.lastUpdated = Date.now();
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return manifestPath;
+}
+
+async function installClaudeSkillsToLocalAgentSessionsFromPack() {
+  const sourceRoot = resolveAssistantPackPath('claude', 'skills');
+  const targetRoots = await listClaudeLocalAgentSkillsRoots();
+  if (!targetRoots.length) {
+    return {
+      sessionsFound: 0,
+      skillDirsUpdated: 0,
+      totalCopies: 0,
+      manifestsUpdated: 0,
+      manifestPaths: [],
+      targetRoots: [],
+    };
+  }
+
+  const sourceEntries = await fs.readdir(sourceRoot, { withFileTypes: true });
+  const metadata = await readClaudeSkillMetadataFromPack();
+  let skillDirsUpdated = 0;
+  let totalCopies = 0;
+  let manifestsUpdated = 0;
+  const manifestPaths = [];
+
+  for (const targetRoot of targetRoots) {
+    const sessionRoot = path.dirname(targetRoot);
+    for (const entry of sourceEntries) {
+      if (!entry.isDirectory()) continue;
+      const sourceSkillFile = path.join(sourceRoot, entry.name, 'SKILL.md');
+      if (!(await fileExists(sourceSkillFile))) continue;
+
+      const targetSkillDir = path.join(targetRoot, entry.name);
+      await fs.mkdir(targetSkillDir, { recursive: true });
+      await fs.copyFile(sourceSkillFile, path.join(targetSkillDir, 'SKILL.md'));
+      skillDirsUpdated += 1;
+      totalCopies += 1;
+    }
+
+    if (metadata.length) {
+      const manifestPath = await upsertClaudeLocalAgentManifest(sessionRoot, metadata);
+      manifestsUpdated += 1;
+      manifestPaths.push(manifestPath);
+    }
+  }
+
+  return {
+    sessionsFound: targetRoots.length,
+    skillDirsUpdated,
+    totalCopies,
+    manifestsUpdated,
+    manifestPaths,
+    targetRoots,
+  };
+}
+
+function timestampTag() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+async function exportClaudeSkillsZipFromPack() {
+  const sourceRoot = resolveAssistantPackPath('claude', 'skills');
+  const downloadsDir = path.join(os.homedir(), 'Downloads');
+  await fs.mkdir(downloadsDir, { recursive: true });
+
+  const stamp = timestampTag();
+  const stagingRoot = path.join(tmpRoot, `blender-mcp-claude-skills-${stamp}`);
+  const packageRoot = path.join(stagingRoot, 'claude-skills');
+  const zipPath = path.join(downloadsDir, `blender-mcp-claude-skills-${stamp}.zip`);
+
+  await fs.rm(stagingRoot, { recursive: true, force: true });
+  await fs.mkdir(packageRoot, { recursive: true });
+  await fs.rm(zipPath, { force: true });
+
+  let included = 0;
+
+  try {
+    const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const sourceSkillFile = path.join(sourceRoot, entry.name, 'SKILL.md');
+      if (!(await fileExists(sourceSkillFile))) continue;
+
+      const targetSkillDir = path.join(packageRoot, entry.name);
+      await fs.mkdir(targetSkillDir, { recursive: true });
+      await fs.copyFile(sourceSkillFile, path.join(targetSkillDir, 'SKILL.md'));
+      included += 1;
+    }
+
+    if (!included) {
+      throw new Error('No Claude skills were found to export.');
+    }
+
+    const zip = await resolveToolPath('zip');
+    await runCommand(zip, ['-r', zipPath, 'claude-skills'], { cwd: stagingRoot });
+    return {
+      zipPath,
+      skillsIncluded: included,
+      sourceRoot,
+    };
+  } finally {
+    await fs.rm(stagingRoot, { recursive: true, force: true });
+  }
 }
 
 async function autoInstallDeps() {
@@ -501,6 +829,34 @@ ipcMain.handle('setup:install-addon', async () => {
   await fs.copyFile(addonSource, targetFile);
   sendLog(`Addon installed: ${targetFile}`);
   return targetFile;
+});
+
+ipcMain.handle('setup:install-assistant-packs', async () => {
+  const codex = await installCodexSkillsFromPack();
+  const claudeSkills = await installClaudeSkillsFromPack();
+  const claudeLocalAgent = await installClaudeSkillsToLocalAgentSessionsFromPack();
+  const claudeSubAgents = await installClaudeSubAgentsFromPack();
+
+  if (!codex.installed && !claudeSkills.installed && !claudeSubAgents.installed && !claudeLocalAgent.totalCopies) {
+    throw new Error('No assistant templates were installed.');
+  }
+
+  sendLog(
+    `Assistant packs installed (Codex skills: ${codex.installed}, Claude skills: ${claudeSkills.installed}, Claude local-agent copies: ${claudeLocalAgent.totalCopies}, local-agent manifests updated: ${claudeLocalAgent.manifestsUpdated}, Claude sub-agents: ${claudeSubAgents.installed}).`
+  );
+
+  return {
+    codex,
+    claudeSkills,
+    claudeLocalAgent,
+    claudeSubAgents,
+  };
+});
+
+ipcMain.handle('setup:export-claude-skills-zip', async () => {
+  const result = await exportClaudeSkillsZipFromPack();
+  sendLog(`Claude skills ZIP exported: ${result.zipPath} (${result.skillsIncluded} skill(s))`);
+  return result;
 });
 
 ipcMain.handle('app:launch-blender', async () => {
