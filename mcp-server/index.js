@@ -10,6 +10,7 @@ import {
   ListToolsRequestSchema,
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
+import { retrieveContext } from "./rag/retriever.js";
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +110,33 @@ function createServer() {
           inputSchema: {
             type: "object",
             properties: {},
+          },
+        },
+        {
+          name: "retrieve_context",
+          description:
+            "Retrieve top matching repository context chunks from the local RAG store. " +
+            "Run npm run rag:index in mcp-server before first use.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Question or prompt text to retrieve context for",
+              },
+              top_k: {
+                type: "integer",
+                minimum: 1,
+                maximum: 20,
+                description: "How many matches to return (default: 5)",
+              },
+              store_path: {
+                type: "string",
+                description:
+                  "Optional custom store path. Defaults to .rag/vector-store.json",
+              },
+            },
+            required: ["query"],
           },
         },
         {
@@ -246,6 +274,51 @@ function createServer() {
               },
             ],
             isError: error.code !== "ENOENT",
+          };
+        }
+      }
+
+      case "retrieve_context": {
+        try {
+          const query = typeof args.query === "string" ? args.query.trim() : "";
+          if (!query) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "✗ retrieve_context requires a non-empty query string.",
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          const topK = Number.isFinite(Number(args.top_k))
+            ? Number(args.top_k)
+            : 5;
+          const storePath =
+            typeof args.store_path === "string" ? args.store_path : "";
+
+          const result = await retrieveContext({
+            query,
+            topK,
+            storePath,
+          });
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `✗ retrieve_context failed: ${error.message}\n` +
+                  "Run `cd mcp-server && npm run rag:index` to build the local store.",
+              },
+            ],
+            isError: true,
           };
         }
       }

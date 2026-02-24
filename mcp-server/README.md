@@ -126,10 +126,23 @@ The Blender addon watches per-source files by default:
 - **create_in_blender** - Run Blender Python code for creation/modeling tasks
 - **delete_in_blender** - Request explicit object deletion by exact names (uses `DEL:...`/`DELETE:[...]`, subject to addon safety gates)
 - **get_blender_result** - Read latest Blender execution result JSON
+- **retrieve_context** - Retrieve top matching repository context chunks from local RAG store
 - **explain_blender_code** - Explain or improve Blender Python code
 - **debug_blender_error** - Help debug Blender Python errors
 
 ## Development
+
+Build local RAG index:
+
+```bash
+npm run rag:index
+```
+
+Query local RAG index:
+
+```bash
+npm run rag:query -- "How does one-time delete token flow work?"
+```
 
 Test `stdio` mode:
 
