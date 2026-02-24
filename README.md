@@ -48,6 +48,23 @@ Then:
 - Claude sub-agents (if supported): templates are in `~/.claude/agents/`
 - ChatGPT: paste template from `assistant-packs/chatgpt/project-instructions.md` into project instructions
 
+## Local RAG Retrieval (Optional)
+
+Build a local repository index (from `mcp-server/`):
+
+```bash
+cd mcp-server
+npm run rag:index
+```
+
+Query retrieved context:
+
+```bash
+npm run rag:query -- "What are the Blender delete safeguards?"
+```
+
+This powers MCP `retrieve_context` for retrieval-grounded code generation workflows.
+
 ## Demo
 
 ```
