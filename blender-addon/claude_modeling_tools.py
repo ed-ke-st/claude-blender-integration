@@ -28,6 +28,137 @@ import urllib.error
 _TMPDIR = tempfile.gettempdir()
 _TMP_REALPATH = os.path.realpath("/tmp")
 _RESULT_MIRROR_PATH = "/tmp/blender_result.json"
+GENERATION_RULES_VERSION = "2026-02-22.1"
+REQUIRED_CONVENTION_ACK_TOKENS = (
+    "Z_UP",
+    "X_RIGHT",
+    "NEG_Y_FORWARD",
+    "METERS",
+    "RIGHT_HANDED",
+)
+
+
+def build_scene_conventions(scene=None):
+    """Return a stable scene convention payload used by prompts/results."""
+    unit_scale = 1.0
+    if scene and getattr(scene, "unit_settings", None):
+        unit_scale = float(getattr(scene.unit_settings, "scale_length", 1.0) or 1.0)
+
+    return {
+        "up_axis": "Z",
+        "forward_axis": "-Y",
+        "right_axis": "X",
+        "units": "meters",
+        "unit_scale": unit_scale,
+        "handedness": "right-handed",
+    }
+
+
+def build_uv_conventions():
+    return {
+        "uv_origin": "bottom-left",
+        "require_uv_unwrap_for_image_textures": True,
+        "preferred_projection": "smart_project",
+        "preferred_active_uv_map": "UVMap",
+    }
+
+
+def build_material_conventions():
+    return {
+        "principled_bsdf_inputs": [
+            "Base Color",
+            "Metallic",
+            "Roughness",
+            "IOR",
+            "Alpha",
+        ],
+        "mix_node_inputs": ["Factor", "A", "B"],
+        "forbidden_legacy_socket_names": ["Fac", "Color1", "Color2"],
+    }
+
+
+def build_generation_contract(scene=None):
+    return {
+        "generation_rules_version": GENERATION_RULES_VERSION,
+        "scene_conventions": build_scene_conventions(scene),
+        "uv_conventions": build_uv_conventions(),
+        "material_conventions": build_material_conventions(),
+        "required_conventions_ack_tokens": list(REQUIRED_CONVENTION_ACK_TOKENS),
+    }
+
+
+def build_openai_system_prompt():
+    """System prompt with explicit conventions and API guardrails."""
+    return (
+        "You write executable Blender Python only. No markdown. No explanation. "
+        "Only CREATE new objects. NEVER delete, remove, or overwrite existing objects or data. "
+        "Never call bpy.ops.object.delete or bpy.data.objects.remove. "
+        "Do not create or manage collections - objects are organized automatically. "
+        "Target Blender 5.0+ API. "
+        "Socket naming rules: use 'Factor' not 'Fac'; use 'A'/'B' not 'Color1'/'Color2'; "
+        "Principled BSDF inputs must be 'Base Color', 'Metallic', 'Roughness', 'IOR', 'Alpha'. "
+        "Coordinate conventions are mandatory: +Z is up, +X is right, -Y is forward, meters, right-handed system. "
+        "If your code creates image textures, it must also define UV usage explicitly "
+        "(create/ensure an active UV layer and use UV texture coordinates). "
+        "First non-empty line of output must be a comment formatted exactly like "
+        "# CONVENTIONS_ACK: Z_UP,X_RIGHT,NEG_Y_FORWARD,METERS,RIGHT_HANDED"
+    )
+
+
+def validate_generated_code(code):
+    """Static validation for generated code before execution."""
+    errors = []
+    lines = code.splitlines()
+    first_nonempty = next((line.strip() for line in lines if line.strip()), "")
+
+    if not first_nonempty.startswith("# CONVENTIONS_ACK:"):
+        errors.append(
+            "Missing convention acknowledgment header. "
+            "First non-empty line must be '# CONVENTIONS_ACK: Z_UP,X_RIGHT,NEG_Y_FORWARD,METERS,RIGHT_HANDED'."
+        )
+    else:
+        ack_payload = first_nonempty.split(":", 1)[1].strip()
+        ack_tokens = {token.strip() for token in ack_payload.split(",") if token.strip()}
+        missing_tokens = [t for t in REQUIRED_CONVENTION_ACK_TOKENS if t not in ack_tokens]
+        if missing_tokens:
+            errors.append(
+                "Convention acknowledgment is incomplete. Missing token(s): "
+                + ", ".join(missing_tokens)
+            )
+
+    legacy_socket_checks = [
+        (r"inputs\[['\"]Fac['\"]\]", "Use 'Factor' socket name instead of 'Fac'."),
+        (r"inputs\[['\"]Color1['\"]\]", "Use 'A' socket name instead of 'Color1'."),
+        (r"inputs\[['\"]Color2['\"]\]", "Use 'B' socket name instead of 'Color2'."),
+    ]
+    for pattern, message in legacy_socket_checks:
+        if re.search(pattern, code):
+            errors.append(message)
+
+    uses_image_texture = bool(
+        re.search(r"ShaderNodeTexImage|TEX_IMAGE|image\.filepath|bpy\.data\.images\.load", code)
+    )
+    if uses_image_texture:
+        has_uv_layer_handling = bool(re.search(r"uv_layers|bpy\.ops\.uv\.", code))
+        uv_output_patterns = (
+            r"outputs\[['\"]UV['\"]\]",
+            r"outputs\.get\(\s*['\"]UV['\"]\s*\)",
+            r"outputs\[\s*2\s*\]",
+        )
+        has_uv_socket_usage = (
+            "ShaderNodeTexCoord" in code
+            and any(re.search(pattern, code) for pattern in uv_output_patterns)
+        )
+        if not has_uv_layer_handling:
+            errors.append(
+                "Texture code detected but no UV layer setup found (expected uv_layers or bpy.ops.uv.* usage)."
+            )
+        if not has_uv_socket_usage:
+            errors.append(
+                "Texture code detected but no explicit UV coordinate wiring found (expected ShaderNodeTexCoord UV output)."
+            )
+
+    return errors
 
 def _build_watch_files():
     """Build watched file map with /tmp fallback when temp dirs differ."""
@@ -140,6 +271,8 @@ def write_result(status, message, created=None, model_name=None, code=None):
     if request_match:
         request_id = request_match.group(1).strip()
 
+    scene = bpy.context.scene if bpy.context else None
+    contract = build_generation_contract(scene)
     result = {
         "status": status,
         "message": message,
@@ -151,6 +284,11 @@ def write_result(status, message, created=None, model_name=None, code=None):
         "objects_created": created or [],
         "scene_objects": [_obj_info(o) for o in bpy.data.objects],
         "collections": [c.name for c in bpy.data.collections],
+        "generation_rules_version": contract["generation_rules_version"],
+        "scene_conventions": contract["scene_conventions"],
+        "uv_conventions": contract["uv_conventions"],
+        "material_conventions": contract["material_conventions"],
+        "required_conventions_ack_tokens": contract["required_conventions_ack_tokens"],
     }
     try:
         with open(RESULT_FILE, "w", encoding="utf-8") as f:
@@ -338,6 +476,7 @@ def extract_response_text(payload):
 
 def build_openai_generate_prompt(description, context_text=""):
     """Build a strict prompt for Blender Python code generation"""
+    contract_json = json.dumps(build_generation_contract(bpy.context.scene), indent=2)
     return f"""Generate Blender Python code for the following request.
 
 REQUIREMENTS:
@@ -347,14 +486,21 @@ REQUIREMENTS:
 - Return ONLY Python code, no markdown fences
 - NEVER delete or remove existing objects — only create new ones
 - Do NOT manage collections — new objects are organized automatically
+- First non-empty output line must be:
+  # CONVENTIONS_ACK: Z_UP,X_RIGHT,NEG_Y_FORWARD,METERS,RIGHT_HANDED
 - Blender 4.0+ API changes: shader node inputs were renamed:
   - "Fac" is now "Factor"
   - "Color1"/"Color2" are now "A"/"B" (Mix nodes)
   - Principled BSDF: "Base Color", "Metallic", "Roughness", "IOR", "Alpha"
   - NEVER use old names like "Fac", "Color1", "Color2"
+- Coordinate conventions: +Z up, +X right, -Y forward, meters, right-handed
+- If image textures are used, ensure UV layer exists and wire ShaderNodeTexCoord UV output
 
 REQUEST: {description}
-{f'CONTEXT: {context_text}' if context_text else ''}"""
+{f'CONTEXT: {context_text}' if context_text else ''}
+
+SCENE_CONTRACT_JSON:
+{contract_json}"""
 
 
 # Operator to clear error message
@@ -692,7 +838,7 @@ class CLAUDE_OT_generate_with_openai(bpy.types.Operator):
                 "input": [
                     {
                         "role": "system",
-                        "content": "You write executable Blender Python only. No markdown. No explanation. NEVER delete, remove, or overwrite existing objects or data. NEVER call bpy.ops.object.delete or bpy.data.objects.remove. Only CREATE new objects. Do not create or manage collections — objects will be organized automatically. Target Blender 5.0+ API: shader node inputs were renamed in 4.0 — use 'Factor' not 'Fac', 'Roughness' not 'Roughness ' (no trailing space), 'Base Color' not 'Color'. Principled BSDF inputs: use 'Base Color', 'Metallic', 'Roughness', 'IOR', 'Alpha'. Mix nodes: use 'Factor', 'A', 'B' (not 'Fac', 'Color1', 'Color2')."
+                        "content": build_openai_system_prompt()
                     },
                     {
                         "role": "user",
@@ -719,6 +865,15 @@ class CLAUDE_OT_generate_with_openai(bpy.types.Operator):
             
             if not code:
                 raise RuntimeError("Model returned empty output")
+
+            validation_errors = validate_generated_code(code)
+            if validation_errors:
+                scene.claude_last_error = (
+                    "Generated code failed static validation:\n- "
+                    + "\n- ".join(validation_errors)
+                )
+                self.report({'ERROR'}, "Generated code failed validation")
+                return {'CANCELLED'}
             
             scene.claude_generated_code = code
             openai_watch = WATCH_FILES["openai"]

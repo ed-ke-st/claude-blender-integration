@@ -41,6 +41,8 @@ function createServer() {
           description:
             `Execute Python code in Blender. Generate complete bpy/bmesh Python code for Blender 5.0+ and pass it here — it will be written to ${DEFAULT_WATCH_FILE} and auto-executed by Blender. ` +
             "IMPORTANT: Only CREATE new objects. NEVER delete or remove existing objects. Do NOT manage collections (they are handled automatically). " +
+            "Coordinate conventions: +Z up, +X right, -Y forward, meters, right-handed. " +
+            "If you create image textures, explicitly set up UVs and wire ShaderNodeTexCoord UV output. " +
             "Include proper error handling. Do not use markdown fences. " +
             "Blender 4.0+ API: shader node inputs were renamed — use 'Factor' not 'Fac', 'A'/'B' not 'Color1'/'Color2', Principled BSDF uses 'Base Color', 'Metallic', 'Roughness', 'IOR', 'Alpha'.",
           inputSchema: {
