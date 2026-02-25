@@ -28,6 +28,7 @@ To replace the default Electron icon, add files to:
 - Restores the latest Claude/Codex config backup with one click
 - Starts/stops MCP server in `stdio` or `http` mode
 - Streams server logs in the app
+- Builds and queries the local RAG index (`rag:index`, `rag:query`) from the app
 - Inspects relevant `/tmp` files and opens their contents in-app
 - Resets stale `/tmp/blender_result.json` in one click
 - Fetches a live Blender scene snapshot into `/tmp/blender_result.json`

@@ -1,6 +1,6 @@
 {
   "name": "blender-desktop-launcher",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Mac desktop launcher for the Claude/Codex/ChatGPT Blender MCP integration",
   "main": "src/main.js",
   "private": true,

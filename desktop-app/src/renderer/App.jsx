@@ -17,15 +17,36 @@ function formatSetupStatus(result) {
     `Claude config backups: ${d.claudeBackups}`,
     `Codex config backups: ${d.codexBackups}`,
     `Server running: ${c.serverRunning ? 'yes' : 'no'}`,
+    `RAG index present (${result.paths.ragStorePath}): ${c.ragIndexPresent ? 'yes' : 'no'}`,
+    `RAG index chunks/files: ${d.ragChunksIndexed || 0}/${d.ragFilesIndexed || 0}`,
+    `RAG indexed at: ${d.ragIndexedAt || '(not indexed yet)'}`,
+    `RAG status error: ${d.ragStoreError || '(none)'}`,
     '',
     'Paths:',
     `- Repo: ${result.paths.repoRoot}`,
     `- Server: ${result.paths.mcpServerEntrypoint}`,
+    `- RAG store: ${result.paths.ragStorePath}`,
     `- Addon source: ${result.paths.addonSource}`,
     `- Addon target: ${d.addonTarget || '(not detected)'}`,
     `- Claude config: ${result.paths.claudeConfigPath}`,
     `- Codex config: ${result.paths.codexConfigPath}`,
     `- Backups root: ${result.paths.backupRoot}`,
+  ].join('\n');
+}
+
+function formatRagStatus(result) {
+  if (!result) {
+    return 'RAG status unavailable.';
+  }
+
+  return [
+    `Store path: ${result.storePath}`,
+    `Present: ${result.present ? 'yes' : 'no'}`,
+    `Indexed files/chunks: ${result.filesIndexed || 0}/${result.chunksIndexed || 0}`,
+    `Indexed at: ${result.indexedAt || '(not indexed yet)'}`,
+    `Schema version: ${result.schemaVersion ?? '(unknown)'}`,
+    `Store size: ${result.sizeBytes || 0} bytes`,
+    `Error: ${result.error || '(none)'}`,
   ].join('\n');
 }
 
@@ -59,6 +80,10 @@ export function App() {
   const [configStatus, setConfigStatus] = useState('Click a button to write/update config files.');
   const [serverStatus, setServerStatus] = useState('Server stopped.');
   const [serverLogs, setServerLogs] = useState('');
+  const [ragStatus, setRagStatus] = useState('Click "Refresh RAG Status" to inspect local index state.');
+  const [ragOutput, setRagOutput] = useState('');
+  const [ragQueryText, setRagQueryText] = useState('delete token safeguards');
+  const [ragTopK, setRagTopK] = useState('5');
   const [tmpStatus, setTmpStatus] = useState('Click "Refresh Temp Files" to load watched artifacts.');
   const [tmpContent, setTmpContent] = useState('');
   const [tmpFiles, setTmpFiles] = useState([]);
@@ -114,6 +139,12 @@ export function App() {
     return result;
   };
 
+  const refreshRagStatus = async () => {
+    const result = await api.ragStatus();
+    setRagStatus(formatRagStatus(result));
+    return result;
+  };
+
   const refreshTmpFiles = async () => {
     const files = await api.listTmpFiles();
     setTmpFiles(files);
@@ -145,6 +176,10 @@ export function App() {
 
     refreshSetupStatus().catch((error) => {
       setSetupStatus(String(error.message || error));
+    });
+
+    refreshRagStatus().catch((error) => {
+      setRagStatus(`Failed to read RAG status:\n${String(error.message || error)}`);
     });
 
     refreshTmpFiles().catch((error) => {
@@ -766,6 +801,93 @@ export function App() {
       <section className="card">
         <div className="section-title">
           <span className="section-number">4</span>
+          <h2>RAG Control</h2>
+        </div>
+        <div className="card-content">
+          <div className="server-form">
+            <label>
+              Query text
+              <input
+                value={ragQueryText}
+                onChange={(event) => setRagQueryText(event.target.value)}
+                placeholder="What are the Blender delete safeguards?"
+              />
+            </label>
+            <label>
+              Top K
+              <input
+                value={ragTopK}
+                onChange={(event) => setRagTopK(event.target.value)}
+                placeholder="5"
+              />
+            </label>
+          </div>
+          <div className="actions">
+            <button
+              disabled={Boolean(busy.ragRefreshStatus)}
+              onClick={() => runWithBusy('ragRefreshStatus', async () => {
+                try {
+                  await refreshRagStatus();
+                } catch (error) {
+                  setRagStatus(`Failed to read RAG status:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Refresh RAG Status
+            </button>
+            <button
+              disabled={Boolean(busy.ragIndex)}
+              onClick={() => runWithBusy('ragIndex', async () => {
+                try {
+                  const result = await api.ragIndex();
+                  setRagStatus(formatRagStatus(result.ragStatus));
+                  setRagOutput(
+                    [
+                      'RAG index complete.',
+                      '',
+                      `Store: ${result.ragStatus?.storePath || '(unknown)'}`,
+                      `Files indexed: ${result.indexResult?.files_indexed ?? result.ragStatus?.filesIndexed ?? 0}`,
+                      `Chunks indexed: ${result.indexResult?.chunks_indexed ?? result.ragStatus?.chunksIndexed ?? 0}`,
+                      `Indexed at: ${result.indexResult?.indexed_at || result.ragStatus?.indexedAt || '(unknown)'}`,
+                      `Missing patterns: ${(result.indexResult?.missing_patterns || []).join(', ') || '(none)'}`,
+                    ].join('\n')
+                  );
+                  await refreshSetupStatus();
+                } catch (error) {
+                  setRagOutput(`RAG index failed:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Build/Refresh RAG Index
+            </button>
+            <button
+              disabled={Boolean(busy.ragQuery)}
+              onClick={() => runWithBusy('ragQuery', async () => {
+                try {
+                  const topKValue = Number(ragTopK);
+                  const topK = Number.isFinite(topKValue) ? topKValue : 5;
+                  const result = await api.ragQuery({
+                    query: ragQueryText,
+                    topK,
+                  });
+
+                  setRagOutput(JSON.stringify(result, null, 2));
+                } catch (error) {
+                  setRagOutput(`RAG query failed:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Run RAG Query
+            </button>
+          </div>
+          <pre className="status-box">{ragStatus}</pre>
+          <pre className="log-box">{ragOutput}</pre>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="section-title">
+          <span className="section-number">5</span>
           <h2>Temp File Inspector</h2>
         </div>
         <div className="card-content">

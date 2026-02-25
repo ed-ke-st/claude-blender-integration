@@ -8,6 +8,7 @@ const os = require('os');
 const repoRoot = path.resolve(__dirname, '../..');
 const mcpServerDir = path.join(repoRoot, 'mcp-server');
 const mcpServerEntrypoint = path.join(mcpServerDir, 'index.js');
+const ragStorePath = path.join(repoRoot, '.rag', 'vector-store.json');
 const addonSource = path.join(repoRoot, 'blender-addon', 'claude_modeling_tools.py');
 const assistantPacksRepoDir = path.join(repoRoot, 'assistant-packs');
 const assistantPacksResourceDir = path.join(process.resourcesPath || '', 'assistant-packs');
@@ -462,6 +463,56 @@ async function autoInstallDeps() {
   }
 }
 
+function parseJsonOutput(rawText, context) {
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    throw new Error(`${context} did not return valid JSON.`);
+  }
+}
+
+async function runRagCli(args = []) {
+  const node = await resolveToolPath('node');
+  const nodeEnv = await envWithToolPath('node');
+  return runCommand(node, ['rag/cli.js', ...args], { cwd: mcpServerDir, env: nodeEnv });
+}
+
+async function getRagStatus() {
+  const status = {
+    storePath: ragStorePath,
+    present: false,
+    sizeBytes: 0,
+    filesIndexed: 0,
+    chunksIndexed: 0,
+    indexedAt: null,
+    schemaVersion: null,
+    sourcePatterns: [],
+    error: null,
+  };
+
+  try {
+    const [raw, stats] = await Promise.all([
+      fs.readFile(ragStorePath, 'utf8'),
+      fs.stat(ragStorePath),
+    ]);
+
+    const parsed = JSON.parse(raw);
+    status.present = true;
+    status.sizeBytes = stats.size;
+    status.filesIndexed = Array.isArray(parsed.files) ? parsed.files.length : 0;
+    status.chunksIndexed = Array.isArray(parsed.chunks) ? parsed.chunks.length : 0;
+    status.indexedAt = parsed.generated_at || null;
+    status.schemaVersion = parsed.schema_version ?? null;
+    status.sourcePatterns = Array.isArray(parsed.source_patterns) ? parsed.source_patterns : [];
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      status.error = String(error.message || error);
+    }
+  }
+
+  return status;
+}
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -727,11 +778,13 @@ print("Blender MCP Launcher snapshot request")
 async function checkSetupStatus() {
   const claudeBackups = await listBackups('claude');
   const codexBackups = await listBackups('codex');
+  const ragStatus = await getRagStatus();
 
   const status = {
     paths: {
       repoRoot,
       mcpServerEntrypoint,
+      ragStorePath,
       addonSource,
       claudeConfigPath,
       codexConfigPath,
@@ -747,10 +800,17 @@ async function checkSetupStatus() {
       claudeConfigExists: false,
       codexConfigExists: false,
       serverRunning: Boolean(serverProcess),
+      ragIndexPresent: false,
     },
     details: {
       claudeBackups: claudeBackups.length,
       codexBackups: codexBackups.length,
+      ragChunksIndexed: ragStatus.chunksIndexed,
+      ragFilesIndexed: ragStatus.filesIndexed,
+      ragIndexedAt: ragStatus.indexedAt,
+      ragStoreSizeBytes: ragStatus.sizeBytes,
+      ragStoreSchemaVersion: ragStatus.schemaVersion,
+      ragStoreError: ragStatus.error,
     },
   };
 
@@ -768,6 +828,7 @@ async function checkSetupStatus() {
   status.checks.addonSourcePresent = await fileExists(addonSource);
   status.checks.claudeConfigExists = await fileExists(claudeConfigPath);
   status.checks.codexConfigExists = await fileExists(codexConfigPath);
+  status.checks.ragIndexPresent = ragStatus.present;
 
   const addonTarget = await detectBlenderAddonTarget();
   const addonTargetFile = path.join(addonTarget, 'claude_modeling_tools.py');
@@ -812,6 +873,7 @@ ipcMain.handle('tmp:list-files', async () => listTmpFiles());
 ipcMain.handle('tmp:read-file', async (_event, filePath) => readTmpFile(filePath));
 ipcMain.handle('tmp:reset-result', async () => resetBlenderResultFile());
 ipcMain.handle('tmp:fetch-snapshot', async () => fetchLiveSceneSnapshot());
+ipcMain.handle('rag:status', async () => getRagStatus());
 
 ipcMain.handle('setup:install-deps', async () => {
   sendLog('Installing MCP server dependencies (npm install)...');
@@ -820,6 +882,38 @@ ipcMain.handle('setup:install-deps', async () => {
   const result = await runCommand(npm, ['install'], { cwd: mcpServerDir, env: npmEnv });
   sendLog('Dependencies installed.');
   return result.stdout || 'Dependencies installed.';
+});
+
+ipcMain.handle('rag:index', async () => {
+  sendLog('Building local RAG index...');
+  const result = await runRagCli(['index', '--json']);
+  const parsed = parseJsonOutput(result.stdout, 'rag:index');
+  const ragStatus = await getRagStatus();
+  sendLog(
+    `RAG index complete (${parsed.files_indexed || ragStatus.filesIndexed} file(s), ${parsed.chunks_indexed || ragStatus.chunksIndexed} chunk(s)).`
+  );
+  return {
+    indexResult: parsed,
+    ragStatus,
+  };
+});
+
+ipcMain.handle('rag:query', async (_event, options = {}) => {
+  const query = String(options.query || '').trim();
+  if (!query) {
+    throw new Error('Query text is required.');
+  }
+
+  const requestedTopK = Number(options.topK);
+  const topK = Number.isFinite(requestedTopK)
+    ? Math.max(1, Math.min(20, Math.floor(requestedTopK)))
+    : 5;
+
+  sendLog(`Running RAG query (top_k=${topK}): ${query}`);
+  const result = await runRagCli(['query', query, '--top-k', String(topK), '--json']);
+  const parsed = parseJsonOutput(result.stdout, 'rag:query');
+  sendLog(`RAG query complete (${Array.isArray(parsed.results) ? parsed.results.length : 0} result(s)).`);
+  return parsed;
 });
 
 ipcMain.handle('setup:install-addon', async () => {
