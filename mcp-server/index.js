@@ -106,10 +106,18 @@ function createServer() {
           description:
             "Read the latest execution result from Blender. Returns status (success/error/rolled_back), " +
             "error message if any, list of created objects, all scene objects, and all collections. " +
-            "Call this after create_in_blender to verify the code ran successfully or to diagnose errors.",
+            "When the latest addon is installed, result also includes addon_state flags (watcher/delete session state). " +
+            "Call this after create_in_blender to verify the code ran successfully or to diagnose errors. " +
+            "Use refresh=true only when you need to force a fresh snapshot probe.",
           inputSchema: {
             type: "object",
-            properties: {},
+            properties: {
+              refresh: {
+                type: "boolean",
+                description:
+                  "Optional. When true, trigger a fresh Blender snapshot probe before reading result.",
+              },
+            },
           },
         },
         {
@@ -240,10 +248,17 @@ function createServer() {
         const fs = await import("fs/promises");
 
         try {
+          const refresh = Boolean(args.refresh);
+          if (!refresh) {
+            const data = await fs.readFile(RESULT_FILE, "utf8");
+            return {
+              content: [{ type: "text", text: data }],
+            };
+          }
+
           const requestId = randomUUID();
           const probeCode = buildSnapshotProbeScript(requestId);
           await fs.writeFile(watchFilePath, probeCode, "utf8");
-
           const fresh = await waitForFreshResult(fs, watchFilePath, requestId);
           if (fresh) {
             return {

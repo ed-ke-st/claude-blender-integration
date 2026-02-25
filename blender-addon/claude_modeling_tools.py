@@ -273,6 +273,19 @@ def write_result(status, message, created=None, model_name=None, code=None):
 
     scene = bpy.context.scene if bpy.context else None
     contract = build_generation_contract(scene)
+    addon_state = {
+        "file_watcher_enabled": bool(scene and getattr(scene, "claude_file_watcher_enabled", False)),
+        "delete_armed": bool(scene and getattr(scene, "claude_delete_armed", False)),
+        "delete_token_present": bool(
+            scene and getattr(scene, "claude_delete_token", "").strip()
+        ),
+        "trusted_delete_session": bool(
+            scene and getattr(scene, "claude_delete_trusted_session", False)
+        ),
+        "openai_mode_enabled": bool(scene and getattr(scene, "claude_openai_enabled", False)),
+        "watch_files": dict(WATCH_FILES),
+        "result_file": RESULT_FILE,
+    }
     result = {
         "status": status,
         "message": message,
@@ -289,6 +302,7 @@ def write_result(status, message, created=None, model_name=None, code=None):
         "uv_conventions": contract["uv_conventions"],
         "material_conventions": contract["material_conventions"],
         "required_conventions_ack_tokens": contract["required_conventions_ack_tokens"],
+        "addon_state": addon_state,
     }
     try:
         with open(RESULT_FILE, "w", encoding="utf-8") as f:
