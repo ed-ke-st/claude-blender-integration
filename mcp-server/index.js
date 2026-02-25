@@ -44,6 +44,7 @@ function createServer() {
             "IMPORTANT: Only CREATE new objects. NEVER delete or remove existing objects. Do NOT manage collections (they are handled automatically). " +
             "Coordinate conventions: +Z up, +X right, -Y forward, meters, right-handed. " +
             "If you create image textures, explicitly set up UVs and wire ShaderNodeTexCoord UV output. " +
+            "Static validation blocks legacy Blender node socket names before execution. " +
             "Include proper error handling. Do not use markdown fences. " +
             "Blender 4.0+ API: shader node inputs were renamed — use 'Factor' not 'Fac', 'A'/'B' not 'Color1'/'Color2', Principled BSDF uses 'Base Color', 'Metallic', 'Roughness', 'IOR', 'Alpha'.",
           inputSchema: {
@@ -181,6 +182,21 @@ function createServer() {
         try {
           const requestId = randomUUID();
           const code = stripCodeFences(args.code);
+          const validationErrors = validateCreateCode(code);
+          if (validationErrors.length > 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    "✗ create_in_blender blocked code due to static validation:\n- " +
+                    validationErrors.join("\n- ") +
+                    "\n\nRegenerate using current Blender 5.0+ socket names (or call retrieve_context first).",
+                },
+              ],
+              isError: true,
+            };
+          }
           const stampedCode = stampCodeWithRequestId(code, requestId);
           await fs.writeFile(watchFilePath, stampedCode, "utf8");
           const result = await waitForFreshResult(fs, watchFilePath, requestId);
@@ -373,6 +389,45 @@ function stripCodeFences(text) {
     return lines.slice(1, -1).join("\n").trim();
   }
   return trimmed;
+}
+
+function validateCreateCode(code) {
+  const source = typeof code === "string" ? code : "";
+  const errors = [];
+
+  const checks = [
+    {
+      pattern: /inputs\[\s*(?:['"]Fac['"]|Fac)\s*\]/,
+      message: "Use 'Factor' socket name instead of 'Fac'.",
+    },
+    {
+      pattern: /inputs\[\s*(?:['"]Color1['"]|Color1)\s*\]/,
+      message: "Use 'A' socket name instead of 'Color1'.",
+    },
+    {
+      pattern: /inputs\[\s*(?:['"]Color2['"]|Color2)\s*\]/,
+      message: "Use 'B' socket name instead of 'Color2'.",
+    },
+    {
+      pattern: /inputs\[\s*(?:['"]Roughness\s+['"]|Roughness\s+)\s*\]/,
+      message: "Use exact socket name 'Roughness' (no trailing space).",
+    },
+  ];
+
+  for (const check of checks) {
+    if (check.pattern.test(source)) {
+      errors.push(check.message);
+    }
+  }
+
+  if (
+    /ShaderNodeBsdfPrincipled/.test(source) &&
+    /inputs\[\s*(?:['"]Color['"]|Color)\s*\]/.test(source)
+  ) {
+    errors.push("Principled BSDF must use 'Base Color' instead of 'Color'.");
+  }
+
+  return errors;
 }
 
 async function waitForFreshResult(fs, watchFilePath, requestId = "") {

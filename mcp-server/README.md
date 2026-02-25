@@ -123,7 +123,7 @@ The Blender addon watches per-source files by default:
 
 ### Tools Available:
 
-- **create_in_blender** - Run Blender Python code for creation/modeling tasks
+- **create_in_blender** - Run Blender Python code for creation/modeling tasks (blocks legacy socket names via static validation)
 - **delete_in_blender** - Request explicit object deletion by exact names (uses `DEL:...`/`DELETE:[...]`, subject to addon safety gates)
 - **get_blender_result** - Read latest Blender execution result JSON (supports `refresh: true` to force a probe snapshot)
 - **retrieve_context** - Retrieve top matching repository context chunks from local RAG store
