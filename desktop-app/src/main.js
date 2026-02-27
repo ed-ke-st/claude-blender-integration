@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { spawn } = require('child_process');
 const fsSync = require('fs');
 const fs = require('fs/promises');
@@ -25,15 +25,31 @@ const claudeLocalAgentSkillsPluginRoot = path.join(
 );
 const blenderScriptsRoot = path.join(os.homedir(), 'Library', 'Application Support', 'Blender');
 const blenderAppPath = '/Applications/Blender.app';
+const blenderDownloadUrl = 'https://www.blender.org/download/';
+const claudeDesktopDownloadUrl = 'https://claude.ai/download';
+const codexInstallDocsUrl = 'https://github.com/openai/codex#installation';
+const codexNpmPackage = '@openai/codex';
+const chatgptDesktopDownloadUrl = 'https://openai.com/chatgpt/desktop/';
+const claudeDesktopAppCandidates = [
+  '/Applications/Claude.app',
+  '/Applications/Claude Desktop.app',
+];
+const chatgptDesktopAppCandidates = [
+  '/Applications/ChatGPT.app',
+];
 // Use the OS per-user temp dir — avoids EACCES collisions when multiple macOS
 // users run the app (sticky bit on /tmp prevents cross-user file writes).
 const tmpRoot = os.tmpdir();
 const tmpReadLimitBytes = 300 * 1024;
 const blenderClaudeWatchFile = path.join(tmpRoot, 'blender_claude_execute.py');
 const blenderResultFile = path.join(tmpRoot, 'blender_result.json');
+const nodeDownloadUrl = 'https://nodejs.org/en/download';
+const nvmReleaseBaseUrl = 'https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4';
+const nvmNodeMajor = '24';
 
 let mainWindow = null;
 let serverProcess = null;
+let nodeInstallJob = null;
 const appDisplayName = 'Blender MCP Launcher';
 
 // Electron only inherits the minimal system PATH (/usr/bin:/bin etc.), so npm/node
@@ -41,14 +57,48 @@ const appDisplayName = 'Blender MCP Launcher';
 // Resolve the real path once by asking a login shell, then cache it.
 const toolPathCache = {};
 
+async function runLoginShell(command, options = {}) {
+  const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash'].filter(Boolean);
+  let lastError = null;
+
+  for (const shell of shells) {
+    try {
+      return await runCommand(shell, ['-l', '-c', command], options);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('No login shell available to run command.');
+}
+
 async function resolveToolPath(tool) {
   if (toolPathCache[tool]) return toolPathCache[tool];
+
+  if (tool === 'node' || tool === 'npm') {
+    try {
+      const nvmResolveCmd = [
+        'export NVM_DIR="$HOME/.nvm"',
+        '[ -s "$NVM_DIR/nvm.sh" ]',
+        '. "$NVM_DIR/nvm.sh"',
+        `command -v ${tool}`,
+      ].join(' && ');
+
+      const nvmResolved = (await runLoginShell(nvmResolveCmd)).stdout.trim();
+      if (nvmResolved && fsSync.existsSync(nvmResolved)) {
+        toolPathCache[tool] = nvmResolved;
+        return nvmResolved;
+      }
+    } catch {
+      // nvm not available yet; continue with standard resolution.
+    }
+  }
 
   const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash'].filter(Boolean);
   for (const shell of shells) {
     try {
       const result = await new Promise((resolve, reject) => {
-        const child = spawn(shell, ['-l', '-c', `which ${tool}`], { env: process.env });
+        const child = spawn(shell, ['-l', '-c', `command -v ${tool}`], { env: process.env });
         let out = '';
         child.stdout.on('data', (d) => { out += d.toString(); });
         child.on('close', (code) => (code === 0 ? resolve(out.trim()) : reject()));
@@ -67,6 +117,8 @@ async function resolveToolPath(tool) {
   const fallbacks = {
     npm: ['/opt/homebrew/bin/npm', '/usr/local/bin/npm', '/usr/bin/npm'],
     node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
+    codex: ['/opt/homebrew/bin/codex', '/usr/local/bin/codex', '/usr/bin/codex'],
+    brew: ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', '/usr/bin/brew'],
     zip: ['/usr/bin/zip', '/opt/homebrew/bin/zip', '/usr/local/bin/zip'],
   };
   for (const candidate of (fallbacks[tool] || [])) {
@@ -116,6 +168,11 @@ function sendLog(message) {
 function sendInstallState(state) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send('install-state', state);
+}
+
+function sendNodeInstallState(state) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('node-install-state', state);
 }
 
 function resolveAssistantPackPath(...segments) {
@@ -438,6 +495,18 @@ async function exportClaudeSkillsZipFromPack() {
 async function autoInstallDeps() {
   if (await fileExists(path.join(mcpServerDir, 'node_modules'))) return;
 
+  const nodeProbe = await probeNodeInstallation();
+  if (!nodeProbe.installed) {
+    sendLog('First run: Node.js not detected yet; skipping automatic dependency install.');
+    sendInstallState({
+      installing: false,
+      error: null,
+      skipped: true,
+      reason: 'node-missing',
+    });
+    return;
+  }
+
   sendInstallState({ installing: true, error: null });
   sendLog('First run: installing MCP server dependencies...');
 
@@ -458,8 +527,11 @@ async function autoInstallDeps() {
     sendInstallState({ installing: false, error: null });
   } catch (error) {
     const msg = String(error.message || error);
-    sendLog(`Dependency install failed: ${msg}`);
-    sendInstallState({ installing: false, error: msg });
+    const friendlyMsg = /spawn npm ENOENT/i.test(msg)
+      ? 'npm was not found. Install Node.js first, then install dependencies.'
+      : msg;
+    sendLog(`Dependency install failed: ${friendlyMsg}`);
+    sendInstallState({ installing: false, error: friendlyMsg });
   }
 }
 
@@ -472,9 +544,150 @@ function parseJsonOutput(rawText, context) {
 }
 
 async function runRagCli(args = []) {
-  const node = await resolveToolPath('node');
+  const nodeProbe = await ensureNodeInstalled();
+  const node = nodeProbe.nodePath;
   const nodeEnv = await envWithToolPath('node');
   return runCommand(node, ['rag/cli.js', ...args], { cwd: mcpServerDir, env: nodeEnv });
+}
+
+async function probeNodeInstallation() {
+  try {
+    const nodePath = await resolveToolPath('node');
+    const result = await runCommand(nodePath, ['--version']);
+    return {
+      installed: true,
+      nodePath,
+      nodeVersion: result.stdout.trim(),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      installed: false,
+      nodePath: null,
+      nodeVersion: null,
+      error: String(error.message || error),
+    };
+  }
+}
+
+async function ensureNodeInstalled() {
+  const probe = await probeNodeInstallation();
+  if (!probe.installed) {
+    throw new Error(
+      `Node.js is required but was not detected. Install Node.js and try again. Details: ${probe.error}`
+    );
+  }
+  return probe;
+}
+
+async function detectInstalledApp(candidates = []) {
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function probeCodexInstallation() {
+  try {
+    const codexPath = await resolveToolPath('codex');
+    const result = await runCommand(codexPath, ['--version']);
+    const version = (result.stdout || result.stderr || '').trim().split('\n').filter(Boolean).slice(-1)[0] || null;
+    return {
+      installed: true,
+      codexPath,
+      codexVersion: version,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      installed: false,
+      codexPath: null,
+      codexVersion: null,
+      error: String(error.message || error),
+    };
+  }
+}
+
+async function runNodeInstallFlow() {
+  const before = await probeNodeInstallation();
+  if (before.installed) {
+    sendLog(`Node.js already installed (${before.nodeVersion}).`);
+    return {
+      ok: true,
+      alreadyInstalled: true,
+      method: 'existing',
+      nodeVersion: before.nodeVersion,
+      nodePath: before.nodePath,
+      downloadUrl: nodeDownloadUrl,
+    };
+  }
+
+  try {
+    sendLog(`Installing Node.js with nvm script bootstrap (${nvmReleaseBaseUrl})...`);
+    const nvmInstallCommand = [
+      'set -e',
+      'export NVM_DIR="$HOME/.nvm"',
+      'mkdir -p "$NVM_DIR"',
+      '[ -s "$NVM_DIR/nvm.sh" ] || ('
+        + 'curl -fsSL "' + nvmReleaseBaseUrl + '/nvm.sh" -o "$NVM_DIR/nvm.sh"'
+        + ' && curl -fsSL "' + nvmReleaseBaseUrl + '/nvm-exec" -o "$NVM_DIR/nvm-exec"'
+        + ' && chmod +x "$NVM_DIR/nvm-exec"'
+        + ' && curl -fsSL "' + nvmReleaseBaseUrl + '/bash_completion" -o "$NVM_DIR/bash_completion"'
+        + ')',
+      "grep -q 'NVM_DIR=\"$HOME/.nvm\"' \"$HOME/.zshrc\" 2>/dev/null || printf '\\nexport NVM_DIR=\"$HOME/.nvm\"\\n[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"\\n' >> \"$HOME/.zshrc\"",
+      "grep -q 'NVM_DIR=\"$HOME/.nvm\"' \"$HOME/.bashrc\" 2>/dev/null || printf '\\nexport NVM_DIR=\"$HOME/.nvm\"\\n[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"\\n' >> \"$HOME/.bashrc\"",
+      '. "$NVM_DIR/nvm.sh"',
+      `nvm install ${nvmNodeMajor}`,
+      `nvm alias default ${nvmNodeMajor}`,
+      'node -v',
+      'npm -v',
+    ].join(' && ');
+
+    const nvmResult = await runLoginShell(nvmInstallCommand);
+    if (nvmResult.stdout.trim()) {
+      sendLog(`[nvm] ${nvmResult.stdout.trim().split('\n').slice(-2).join(' | ')}`);
+    }
+
+    delete toolPathCache.node;
+    delete toolPathCache.npm;
+    const after = await probeNodeInstallation();
+    if (!after.installed) {
+      throw new Error('nvm install completed, but node is still not available to the launcher.');
+    }
+
+    sendLog(`Node.js installed via nvm (${after.nodeVersion}).`);
+    return {
+      ok: true,
+      alreadyInstalled: false,
+      method: 'nvm',
+      nodeVersion: after.nodeVersion,
+      nodePath: after.nodePath,
+      downloadUrl: nodeDownloadUrl,
+    };
+  } catch (error) {
+    const message = String(error.message || error);
+    const needsCommandLineTools = /xcode-select --install|Command Line Developer Tools/i.test(message);
+    const friendlyMessage = needsCommandLineTools
+      ? 'Xcode Command Line Tools are required before installing Node.js. Run `xcode-select --install`, complete setup, then retry.'
+      : message;
+
+    sendLog(`nvm Node.js install attempt failed: ${friendlyMessage}`);
+    if (needsCommandLineTools) {
+      sendLog('Open Terminal and run: xcode-select --install');
+    }
+    sendLog(`Node.js install failed. Manual download: ${nodeDownloadUrl}`);
+    return {
+      ok: false,
+      alreadyInstalled: false,
+      method: 'manual',
+      nodeVersion: null,
+      nodePath: null,
+      downloadUrl: nodeDownloadUrl,
+      error: friendlyMessage,
+    };
+  }
 }
 
 async function getRagStatus() {
@@ -779,6 +992,9 @@ async function checkSetupStatus() {
   const claudeBackups = await listBackups('claude');
   const codexBackups = await listBackups('codex');
   const ragStatus = await getRagStatus();
+  const claudeDesktopPath = await detectInstalledApp(claudeDesktopAppCandidates);
+  const chatgptDesktopPath = await detectInstalledApp(chatgptDesktopAppCandidates);
+  const codexProbe = await probeCodexInstallation();
 
   const status = {
     paths: {
@@ -789,6 +1005,10 @@ async function checkSetupStatus() {
       claudeConfigPath,
       codexConfigPath,
       blenderAppPath,
+      blenderDownloadUrl,
+      claudeDesktopDownloadUrl,
+      codexInstallDocsUrl,
+      chatgptDesktopDownloadUrl,
       backupRoot: getBackupRoot(),
     },
     checks: {
@@ -797,6 +1017,9 @@ async function checkSetupStatus() {
       mcpDependenciesInstalled: false,
       addonSourcePresent: false,
       addonInstalled: false,
+      claudeDesktopInstalled: false,
+      codexCliInstalled: false,
+      chatgptDesktopInstalled: false,
       claudeConfigExists: false,
       codexConfigExists: false,
       serverRunning: Boolean(serverProcess),
@@ -811,19 +1034,24 @@ async function checkSetupStatus() {
       ragStoreSizeBytes: ragStatus.sizeBytes,
       ragStoreSchemaVersion: ragStatus.schemaVersion,
       ragStoreError: ragStatus.error,
+      claudeDesktopPath,
+      chatgptDesktopPath,
+      codexPath: codexProbe.codexPath,
+      codexVersion: codexProbe.codexVersion,
+      codexInstallError: codexProbe.error,
     },
   };
 
-  try {
-    const node = await resolveToolPath('node');
-    const result = await runCommand(node, ['--version']);
-    status.checks.nodeInstalled = true;
-    status.details.nodeVersion = result.stdout.trim();
-  } catch (error) {
-    status.details.nodeVersion = error.message;
-  }
+  const nodeProbe = await probeNodeInstallation();
+  status.checks.nodeInstalled = nodeProbe.installed;
+  status.details.nodeVersion = nodeProbe.installed
+    ? nodeProbe.nodeVersion
+    : `Not installed (${nodeProbe.error})`;
 
   status.checks.blenderInstalled = await fileExists(blenderAppPath);
+  status.checks.claudeDesktopInstalled = Boolean(claudeDesktopPath);
+  status.checks.codexCliInstalled = codexProbe.installed;
+  status.checks.chatgptDesktopInstalled = Boolean(chatgptDesktopPath);
   status.checks.mcpDependenciesInstalled = await fileExists(path.join(mcpServerDir, 'node_modules'));
   status.checks.addonSourcePresent = await fileExists(addonSource);
   status.checks.claudeConfigExists = await fileExists(claudeConfigPath);
@@ -876,12 +1104,116 @@ ipcMain.handle('tmp:fetch-snapshot', async () => fetchLiveSceneSnapshot());
 ipcMain.handle('rag:status', async () => getRagStatus());
 
 ipcMain.handle('setup:install-deps', async () => {
+  await ensureNodeInstalled();
   sendLog('Installing MCP server dependencies (npm install)...');
   const npm = await resolveToolPath('npm');
   const npmEnv = await envWithToolPath('npm');
   const result = await runCommand(npm, ['install'], { cwd: mcpServerDir, env: npmEnv });
   sendLog('Dependencies installed.');
   return result.stdout || 'Dependencies installed.';
+});
+
+ipcMain.handle('setup:install-node', async () => {
+  if (nodeInstallJob) {
+    return { started: false, alreadyRunning: true };
+  }
+
+  nodeInstallJob = (async () => {
+    sendNodeInstallState({ installing: true, error: null, result: null });
+    try {
+      const result = await runNodeInstallFlow();
+      sendNodeInstallState({
+        installing: false,
+        error: result.ok ? null : result.error || 'Node install failed.',
+        result,
+      });
+      if (result.ok) {
+        autoInstallDeps().catch((err) =>
+          sendLog(`Auto dependency install after Node setup failed: ${String(err.message || err)}`)
+        );
+      }
+    } catch (error) {
+      const message = String(error.message || error);
+      sendLog(`Node.js install job failed unexpectedly: ${message}`);
+      sendNodeInstallState({
+        installing: false,
+        error: message,
+        result: {
+          ok: false,
+          alreadyInstalled: false,
+          method: 'manual',
+          nodeVersion: null,
+          nodePath: null,
+          downloadUrl: nodeDownloadUrl,
+          error: message,
+        },
+      });
+    } finally {
+      nodeInstallJob = null;
+    }
+  })();
+
+  return { started: true, alreadyRunning: false };
+});
+
+ipcMain.handle('setup:install-codex-cli', async () => {
+  const before = await probeCodexInstallation();
+  if (before.installed) {
+    sendLog(`Codex CLI already installed (${before.codexVersion || 'version unknown'}).`);
+    return {
+      ok: true,
+      alreadyInstalled: true,
+      method: 'existing',
+      codexPath: before.codexPath,
+      codexVersion: before.codexVersion,
+      docsUrl: codexInstallDocsUrl,
+      packageName: codexNpmPackage,
+    };
+  }
+
+  try {
+    await ensureNodeInstalled();
+    const npm = await resolveToolPath('npm');
+    const npmEnv = await envWithToolPath('npm');
+    sendLog(`Installing Codex CLI with npm (${codexNpmPackage})...`);
+    await runCommand(npm, ['install', '-g', codexNpmPackage], { env: npmEnv });
+
+    delete toolPathCache.codex;
+    const after = await probeCodexInstallation();
+    if (!after.installed) {
+      throw new Error('npm install completed, but codex command is still not available.');
+    }
+
+    sendLog(`Codex CLI installed (${after.codexVersion || 'version unknown'}).`);
+    return {
+      ok: true,
+      alreadyInstalled: false,
+      method: 'npm',
+      codexPath: after.codexPath,
+      codexVersion: after.codexVersion,
+      docsUrl: codexInstallDocsUrl,
+      packageName: codexNpmPackage,
+    };
+  } catch (error) {
+    const message = String(error.message || error);
+    sendLog(`Automatic Codex CLI install failed: ${message}`);
+    try {
+      await shell.openExternal(codexInstallDocsUrl);
+      sendLog(`Opened Codex install docs: ${codexInstallDocsUrl}`);
+    } catch (openError) {
+      sendLog(`Failed to open Codex docs: ${String(openError.message || openError)}`);
+    }
+    return {
+      ok: false,
+      alreadyInstalled: false,
+      method: 'manual',
+      codexPath: null,
+      codexVersion: null,
+      docsUrl: codexInstallDocsUrl,
+      packageName: codexNpmPackage,
+      error: message,
+    };
+  }
 });
 
 ipcMain.handle('rag:index', async () => {
@@ -958,9 +1290,36 @@ ipcMain.handle('app:launch-blender', async () => {
     throw new Error(`Blender not found at ${blenderAppPath}`);
   }
 
-  await runCommand('open', ['-a', blenderAppPath]);
+  const openError = await shell.openPath(blenderAppPath);
+  if (openError) {
+    throw new Error(`Failed to launch Blender: ${openError}`);
+  }
   sendLog('Blender launched.');
   return { launched: true, blenderAppPath };
+});
+
+ipcMain.handle('app:open-blender-download', async () => {
+  await shell.openExternal(blenderDownloadUrl);
+  sendLog(`Opened Blender download page: ${blenderDownloadUrl}`);
+  return { opened: true, url: blenderDownloadUrl };
+});
+
+ipcMain.handle('app:open-claude-download', async () => {
+  await shell.openExternal(claudeDesktopDownloadUrl);
+  sendLog(`Opened Claude Desktop download page: ${claudeDesktopDownloadUrl}`);
+  return { opened: true, url: claudeDesktopDownloadUrl };
+});
+
+ipcMain.handle('app:open-chatgpt-download', async () => {
+  await shell.openExternal(chatgptDesktopDownloadUrl);
+  sendLog(`Opened ChatGPT desktop download page: ${chatgptDesktopDownloadUrl}`);
+  return { opened: true, url: chatgptDesktopDownloadUrl };
+});
+
+ipcMain.handle('app:open-codex-install-docs', async () => {
+  await shell.openExternal(codexInstallDocsUrl);
+  sendLog(`Opened Codex install docs: ${codexInstallDocsUrl}`);
+  return { opened: true, url: codexInstallDocsUrl };
 });
 
 ipcMain.handle('config:claude', async () => {
@@ -977,7 +1336,8 @@ ipcMain.handle('config:claude', async () => {
     config.mcpServers = {};
   }
 
-  const node = await resolveToolPath('node');
+  const nodeProbe = await ensureNodeInstalled();
+  const node = nodeProbe.nodePath;
   config.mcpServers.blender = {
     command: node,
     args: [mcpServerEntrypoint],
@@ -996,7 +1356,8 @@ ipcMain.handle('config:codex', async () => {
     ? await fs.readFile(codexConfigPath, 'utf8')
     : '';
 
-  const node = await resolveToolPath('node');
+  const nodeProbe = await ensureNodeInstalled();
+  const node = nodeProbe.nodePath;
   const updated = upsertCodexServerConfig(original, mcpServerEntrypoint, node);
   await fs.writeFile(codexConfigPath, updated, 'utf8');
   sendLog(`Codex config updated: ${codexConfigPath}`);
@@ -1034,7 +1395,8 @@ ipcMain.handle('server:start', async (_event, options = {}) => {
     }
   }
 
-  const node = await resolveToolPath('node');
+  const nodeProbe = await ensureNodeInstalled();
+  const node = nodeProbe.nodePath;
   const nodeEnv = await envWithToolPath('node');
   serverProcess = spawn(node, [mcpServerEntrypoint], {
     cwd: mcpServerDir,

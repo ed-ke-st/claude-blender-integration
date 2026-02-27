@@ -30,3 +30,6 @@ temp/
 # Desktop app
 desktop-app/node_modules/
 desktop-app/dist/
+
+# Local assistant runtime artifacts
+.claude/

@@ -9,6 +9,9 @@ function formatSetupStatus(result) {
   return [
     `Node installed: ${c.nodeInstalled ? 'yes' : 'no'} ${d.nodeVersion ? `(${d.nodeVersion})` : ''}`,
     `Blender installed (${result.paths.blenderAppPath}): ${c.blenderInstalled ? 'yes' : 'no'}`,
+    `Claude Desktop installed: ${c.claudeDesktopInstalled ? 'yes' : 'no'} ${d.claudeDesktopPath ? `(${d.claudeDesktopPath})` : ''}`,
+    `Codex CLI installed: ${c.codexCliInstalled ? 'yes' : 'no'} ${d.codexVersion ? `(${d.codexVersion})` : ''}`,
+    `ChatGPT desktop installed: ${c.chatgptDesktopInstalled ? 'yes' : 'no'} ${d.chatgptDesktopPath ? `(${d.chatgptDesktopPath})` : ''}`,
     `MCP dependencies (mcp-server/node_modules): ${c.mcpDependenciesInstalled ? 'yes' : 'no'}`,
     `Addon source present: ${c.addonSourcePresent ? 'yes' : 'no'}`,
     `Addon installed in Blender: ${c.addonInstalled ? 'yes' : 'no'}`,
@@ -28,6 +31,10 @@ function formatSetupStatus(result) {
     `- RAG store: ${result.paths.ragStorePath}`,
     `- Addon source: ${result.paths.addonSource}`,
     `- Addon target: ${d.addonTarget || '(not detected)'}`,
+    `- Blender download: ${result.paths.blenderDownloadUrl || 'https://www.blender.org/download/'}`,
+    `- Claude Desktop download: ${result.paths.claudeDesktopDownloadUrl || 'https://claude.ai/download'}`,
+    `- Codex install docs: ${result.paths.codexInstallDocsUrl || 'https://github.com/openai/codex#installation'}`,
+    `- ChatGPT desktop download: ${result.paths.chatgptDesktopDownloadUrl || 'https://openai.com/chatgpt/desktop/'}`,
     `- Claude config: ${result.paths.claudeConfigPath}`,
     `- Codex config: ${result.paths.codexConfigPath}`,
     `- Backups root: ${result.paths.backupRoot}`,
@@ -52,6 +59,54 @@ function formatRagStatus(result) {
 
 function buttonClass(isDanger) {
   return isDanger ? 'danger' : '';
+}
+
+function formatNodeInstallResult(result) {
+  if (!result || typeof result !== 'object') {
+    return 'Node install finished with an unknown response.';
+  }
+
+  if (result.ok && result.alreadyInstalled) {
+    return `Node.js is already installed (${result.nodeVersion || 'version unknown'}).`;
+  }
+
+  if (result.ok) {
+    const methodLabel = result.method === 'nvm' ? 'via nvm' : '';
+    return [
+      `Node.js installed successfully ${methodLabel} (${result.nodeVersion || 'version unknown'}).`,
+      result.nodePath ? `Path: ${result.nodePath}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  return [
+    'Automatic Node.js installation did not complete.',
+    result.error ? `Details: ${result.error}` : '',
+    result.downloadUrl ? `Download Node.js manually: ${result.downloadUrl}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function formatCodexInstallResult(result) {
+  if (!result || typeof result !== 'object') {
+    return 'Codex install finished with an unknown response.';
+  }
+
+  if (result.ok && result.alreadyInstalled) {
+    return `Codex CLI is already installed (${result.codexVersion || 'version unknown'}).`;
+  }
+
+  if (result.ok) {
+    return [
+      `Codex CLI installed successfully (${result.codexVersion || 'version unknown'}).`,
+      result.codexPath ? `Path: ${result.codexPath}` : '',
+      result.packageName ? `Package: ${result.packageName}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  return [
+    'Automatic Codex CLI installation did not complete.',
+    result.error ? `Details: ${result.error}` : '',
+    result.docsUrl ? `Install docs opened: ${result.docsUrl}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function readOnboardingComplete() {
@@ -98,6 +153,7 @@ export function App() {
   const [busy, setBusy] = useState({});
 
   const [installState, setInstallState] = useState(null);
+  const [nodeInstallState, setNodeInstallState] = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(() => !readOnboardingComplete());
   const [guideStep, setGuideStep] = useState(0);
   const [guideMessage, setGuideMessage] = useState('');
@@ -117,6 +173,10 @@ export function App() {
     {
       title: 'Connect your AI apps',
       body: 'Write launcher-managed config entries for Claude Desktop and Codex.',
+    },
+    {
+      title: 'Build local RAG index',
+      body: 'Index the repository once so retrieve_context and launcher RAG queries are ready on first use.',
     },
     {
       title: 'Run and verify',
@@ -174,6 +234,21 @@ export function App() {
       }
     });
 
+    const unsubNodeInstall = api.onNodeInstallState((state) => {
+      setNodeInstallState(state);
+      if (!state?.installing) {
+        if (state?.result) {
+          setSetupStatus(formatNodeInstallResult(state.result));
+        }
+        refreshSetupStatus().catch((error) => {
+          setSetupStatus(String(error.message || error));
+        });
+        if (!state?.error) {
+          setTimeout(() => setNodeInstallState(null), 3500);
+        }
+      }
+    });
+
     refreshSetupStatus().catch((error) => {
       setSetupStatus(String(error.message || error));
     });
@@ -189,6 +264,7 @@ export function App() {
     return () => {
       unsubscribe();
       unsubInstall();
+      unsubNodeInstall();
     };
   }, [api]);
 
@@ -206,8 +282,12 @@ export function App() {
     setGuideMessage('');
     await runWithBusy(key, async () => {
       try {
-        await fn();
-        setGuideMessage(successMessage);
+        const result = await fn();
+        if (typeof successMessage === 'function') {
+          setGuideMessage(successMessage(result));
+        } else {
+          setGuideMessage(successMessage);
+        }
       } catch (error) {
         setGuideError(String(error.message || error));
       }
@@ -225,6 +305,18 @@ export function App() {
   };
 
   const setupChecks = setupData?.checks;
+  const nodeReady = Boolean(setupChecks?.nodeInstalled);
+  const nodeRequiredHint = 'Node.js is not detected. Click "Install Node.js" first to enable Node-dependent actions.';
+  const blenderReady = Boolean(setupChecks?.blenderInstalled);
+  const blenderRequiredHint = 'Blender is not detected. Click "Download Blender" to open the official installer page, then install Blender and refresh status.';
+  const claudeDesktopReady = Boolean(setupChecks?.claudeDesktopInstalled);
+  const codexReady = Boolean(setupChecks?.codexCliInstalled);
+  const chatgptDesktopReady = Boolean(setupChecks?.chatgptDesktopInstalled);
+  const aiHostsRequiredHint = [
+    !claudeDesktopReady ? 'Claude Desktop not detected. Use "Get Claude Desktop".' : null,
+    !codexReady ? 'Codex CLI not detected. Use "Install Codex CLI" (or open install docs).' : null,
+    !chatgptDesktopReady ? 'ChatGPT desktop not detected. Use "Get ChatGPT Desktop".' : null,
+  ].filter(Boolean).join('\n');
 
   const addonActivationSteps = (
     <div className="addon-steps">
@@ -244,7 +336,9 @@ export function App() {
       {installState.installing && <span className="install-spinner" />}
       <span>
         {installState.installing && 'Installing MCP server dependencies — this only runs once…'}
-        {!installState.installing && !installState.error && 'Dependencies installed successfully.'}
+        {!installState.installing && !installState.error && installState.skipped && installState.reason === 'node-missing'
+          && 'Automatic dependency install skipped until Node.js is installed.'}
+        {!installState.installing && !installState.error && !installState.skipped && 'Dependencies installed successfully.'}
         {installState.error && `Dependency install failed: ${installState.error}`}
       </span>
       {!installState.installing && (
@@ -253,10 +347,25 @@ export function App() {
     </div>
   );
 
+  const nodeInstallBanner = nodeInstallState && (
+    <div className={`install-banner${nodeInstallState.error ? ' error' : ''}`}>
+      {nodeInstallState.installing && <span className="install-spinner" />}
+      <span>
+        {nodeInstallState.installing && 'Installing Node.js in background...'}
+        {!nodeInstallState.installing && !nodeInstallState.error && 'Node.js install finished.'}
+        {nodeInstallState.error && `Node.js install failed: ${nodeInstallState.error}`}
+      </span>
+      {!nodeInstallState.installing && (
+        <button className="ghost" onClick={() => setNodeInstallState(null)}>Dismiss</button>
+      )}
+    </div>
+  );
+
   if (showOnboarding) {
     return (
       <>
         {installBanner}
+        {nodeInstallBanner}
         <main className="onboarding-layout">
         <section className="onboarding-hero">
           <div className="title-with-icon">
@@ -323,7 +432,21 @@ export function App() {
                     Check environment
                   </button>
                   <button
-                    disabled={Boolean(busy.guideInstallDeps) || Boolean(installState?.installing)}
+                    disabled={Boolean(busy.guideInstallNode)}
+                    onClick={() => runGuideAction('guideInstallNode', (result) => {
+                      if (result?.alreadyRunning) {
+                        return 'Node.js install is already running in the background.';
+                      }
+                      return 'Node.js install started in background. You can continue setup while it runs.';
+                    }, async () => {
+                      const result = await api.installNode();
+                      return result;
+                    })}
+                  >
+                    Install Node.js
+                  </button>
+                  <button
+                    disabled={!nodeReady || Boolean(busy.guideInstallDeps) || Boolean(installState?.installing)}
                     onClick={() => runGuideAction('guideInstallDeps', 'Server dependencies installed.', async () => {
                       await api.installDependencies();
                       await refreshSetupStatus();
@@ -341,14 +464,26 @@ export function App() {
                     Install addon
                   </button>
                   <button
-                    disabled={Boolean(busy.guideLaunchBlender)}
+                    disabled={!blenderReady || Boolean(busy.guideLaunchBlender)}
                     onClick={() => runGuideAction('guideLaunchBlender', 'Blender launch requested.', async () => {
                       await api.launchBlender();
                     })}
                   >
                     Launch Blender
                   </button>
+                  <button
+                    disabled={Boolean(busy.guideDownloadBlender)}
+                    onClick={() => runGuideAction(
+                      'guideDownloadBlender',
+                      (result) => `Opened Blender download page:\n${result.url}`,
+                      async () => api.openBlenderDownload()
+                    )}
+                  >
+                    Download Blender
+                  </button>
                 </div>
+                {!nodeReady && <div className="guide-note error">{nodeRequiredHint}</div>}
+                {!blenderReady && <div className="guide-note error">{blenderRequiredHint}</div>}
                 {addonActivationSteps}
               </>
             )}
@@ -356,6 +491,18 @@ export function App() {
             {guideStep === 2 && (
               <>
                 <div className="checklist">
+                  <div className="check-item">
+                    <span>Claude Desktop app installed</span>
+                    {statusPill(claudeDesktopReady)}
+                  </div>
+                  <div className="check-item">
+                    <span>Codex CLI installed</span>
+                    {statusPill(codexReady)}
+                  </div>
+                  <div className="check-item">
+                    <span>ChatGPT desktop app installed</span>
+                    {statusPill(chatgptDesktopReady)}
+                  </div>
                   <div className="check-item">
                     <span>Claude Desktop config connected</span>
                     {statusPill(setupChecks?.claudeConfigExists)}
@@ -367,7 +514,51 @@ export function App() {
                 </div>
                 <div className="guide-actions">
                   <button
-                    disabled={Boolean(busy.guideConfigureClaude)}
+                    disabled={Boolean(busy.guideGetClaudeDesktop)}
+                    onClick={() => runGuideAction(
+                      'guideGetClaudeDesktop',
+                      (result) => `Opened Claude Desktop download page:\n${result.url}`,
+                      async () => api.openClaudeDownload()
+                    )}
+                  >
+                    Get Claude Desktop
+                  </button>
+                  <button
+                    disabled={!nodeReady || Boolean(busy.guideInstallCodexCli)}
+                    onClick={() => runGuideAction(
+                      'guideInstallCodexCli',
+                      (result) => formatCodexInstallResult(result),
+                      async () => {
+                        const result = await api.installCodexCli();
+                        await refreshSetupStatus();
+                        return result;
+                      }
+                    )}
+                  >
+                    Install Codex CLI
+                  </button>
+                  <button
+                    disabled={Boolean(busy.guideOpenCodexDocs)}
+                    onClick={() => runGuideAction(
+                      'guideOpenCodexDocs',
+                      (result) => `Opened Codex install docs:\n${result.url}`,
+                      async () => api.openCodexInstallDocs()
+                    )}
+                  >
+                    Open Codex Install Docs
+                  </button>
+                  <button
+                    disabled={Boolean(busy.guideGetChatgptDesktop)}
+                    onClick={() => runGuideAction(
+                      'guideGetChatgptDesktop',
+                      (result) => `Opened ChatGPT desktop download page:\n${result.url}`,
+                      async () => api.openChatgptDownload()
+                    )}
+                  >
+                    Get ChatGPT Desktop
+                  </button>
+                  <button
+                    disabled={!nodeReady || !claudeDesktopReady || Boolean(busy.guideConfigureClaude)}
                     onClick={() => runGuideAction('guideConfigureClaude', 'Claude Desktop config updated.', async () => {
                       await api.configureClaude();
                       await refreshSetupStatus();
@@ -376,7 +567,7 @@ export function App() {
                     Connect Claude Desktop
                   </button>
                   <button
-                    disabled={Boolean(busy.guideConfigureCodex)}
+                    disabled={!nodeReady || !codexReady || Boolean(busy.guideConfigureCodex)}
                     onClick={() => runGuideAction('guideConfigureCodex', 'Codex config updated.', async () => {
                       await api.configureCodex();
                       await refreshSetupStatus();
@@ -426,10 +617,80 @@ export function App() {
                     Refresh status
                   </button>
                 </div>
+                {!nodeReady && <div className="guide-note error">{nodeRequiredHint}</div>}
+                {aiHostsRequiredHint && <div className="guide-note error">{aiHostsRequiredHint}</div>}
               </>
             )}
 
             {guideStep === 3 && (
+              <>
+                <div className="checklist">
+                  <div className="check-item">
+                    <span>RAG index file present</span>
+                    {statusPill(setupChecks?.ragIndexPresent, 'Indexed', 'Not indexed')}
+                  </div>
+                  <div className="check-item">
+                    <span>RAG chunks indexed</span>
+                    {statusPill((setupData?.details?.ragChunksIndexed || 0) > 0, 'Ready', 'Empty')}
+                  </div>
+                </div>
+                <div className="guide-actions">
+                  <button
+                    disabled={Boolean(busy.guideRefreshRag)}
+                    onClick={() => runGuideAction('guideRefreshRag', 'RAG status refreshed.', async () => {
+                      await refreshRagStatus();
+                      await refreshSetupStatus();
+                    })}
+                  >
+                    Refresh RAG status
+                  </button>
+                  <button
+                    disabled={!nodeReady || Boolean(busy.guideBuildRag)}
+                    onClick={() => runGuideAction('guideBuildRag', 'RAG index built.', async () => {
+                      await api.ragIndex();
+                      await refreshRagStatus();
+                      await refreshSetupStatus();
+                    })}
+                  >
+                    Build RAG index
+                  </button>
+                  <button
+                    disabled={!nodeReady || Boolean(busy.guideRagSmoke)}
+                    onClick={() => runGuideAction(
+                      'guideRagSmoke',
+                      ({ smokeQuery, result }) => {
+                        const hitCount = Array.isArray(result?.results) ? result.results.length : 0;
+                        const topHit = hitCount > 0 ? result.results[0] : null;
+                        const summaryLines = [
+                          `RAG smoke query complete (${hitCount} result(s)).`,
+                          `Query: ${smokeQuery}`,
+                        ];
+                        if (topHit) {
+                          summaryLines.push(
+                            `Top hit: ${topHit.file_path}:${topHit.start_line}-${topHit.end_line} (score ${topHit.score})`
+                          );
+                        }
+                        return summaryLines.join('\n');
+                      },
+                      async () => {
+                        const smokeQuery = 'delete token safeguards';
+                        const result = await api.ragQuery({
+                          query: smokeQuery,
+                          topK: 3,
+                        });
+                        return { smokeQuery, result };
+                      }
+                    )}
+                  >
+                    Run smoke query
+                  </button>
+                </div>
+                {!nodeReady && <div className="guide-note error">{nodeRequiredHint}</div>}
+                <pre className="status-box">{ragStatus}</pre>
+              </>
+            )}
+
+            {guideStep === 4 && (
               <>
                 <div className="checklist">
                   <div className="check-item">
@@ -443,7 +704,7 @@ export function App() {
                 </div>
                 <div className="guide-actions">
                   <button
-                    disabled={Boolean(busy.guideStartServer)}
+                    disabled={!nodeReady || Boolean(busy.guideStartServer)}
                     onClick={() => runGuideAction('guideStartServer', 'Server started in stdio mode.', async () => {
                       await api.startServer({
                         transport: 'stdio',
@@ -476,10 +737,11 @@ export function App() {
                     Fetch scene snapshot
                   </button>
                 </div>
+                {!nodeReady && <div className="guide-note error">{nodeRequiredHint}</div>}
               </>
             )}
 
-            {guideStep === 4 && (
+            {guideStep === 5 && (
               <div className="guide-actions">
                 <button onClick={completeOnboarding}>Open full control panel</button>
               </div>
@@ -513,6 +775,7 @@ export function App() {
   return (
     <>
       {installBanner}
+      {nodeInstallBanner}
       <main>
       <header className="app-header">
         <div className="title-with-icon">
@@ -545,7 +808,7 @@ export function App() {
               Refresh Status
             </button>
             <button
-              disabled={Boolean(busy.launchBlender)}
+              disabled={!blenderReady || Boolean(busy.launchBlender)}
               onClick={() => runWithBusy('launchBlender', async () => {
                 try {
                   const result = await api.launchBlender();
@@ -559,7 +822,37 @@ export function App() {
               Launch Blender
             </button>
             <button
-              disabled={Boolean(busy.installDeps) || Boolean(installState?.installing)}
+              disabled={Boolean(busy.downloadBlender)}
+              onClick={() => runWithBusy('downloadBlender', async () => {
+                try {
+                  const result = await api.openBlenderDownload();
+                  setSetupStatus(`Opened Blender download page:\n${result.url}`);
+                } catch (error) {
+                  setSetupStatus(`Failed to open Blender download page:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Download Blender
+            </button>
+            <button
+              disabled={Boolean(busy.installNode)}
+              onClick={() => runWithBusy('installNode', async () => {
+                try {
+                  const result = await api.installNode();
+                  if (result?.alreadyRunning) {
+                    setSetupStatus('Node.js install is already running in the background.');
+                  } else {
+                    setSetupStatus('Node.js install started in background. You can continue using the launcher while it runs.');
+                  }
+                } catch (error) {
+                  setSetupStatus(`Node install failed:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Install Node.js
+            </button>
+            <button
+              disabled={!nodeReady || Boolean(busy.installDeps) || Boolean(installState?.installing)}
               onClick={() => runWithBusy('installDeps', async () => {
                 try {
                   const output = await api.installDependencies();
@@ -587,6 +880,8 @@ export function App() {
               Install Blender Addon
             </button>
           </div>
+          {!blenderReady && <pre className="status-hint">{blenderRequiredHint}</pre>}
+          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
           {addonActivationSteps}
           <pre className="status-box">{setupStatus}</pre>
         </div>
@@ -598,9 +893,76 @@ export function App() {
           <h2>Configure Hosts</h2>
         </div>
         <div className="card-content">
+          <div className="checklist">
+            <div className="check-item">
+              <span>Claude Desktop app installed</span>
+              {statusPill(claudeDesktopReady)}
+            </div>
+            <div className="check-item">
+              <span>Codex CLI installed</span>
+              {statusPill(codexReady)}
+            </div>
+            <div className="check-item">
+              <span>ChatGPT desktop app installed</span>
+              {statusPill(chatgptDesktopReady)}
+            </div>
+          </div>
           <div className="actions">
             <button
-              disabled={Boolean(busy.configureClaude)}
+              disabled={Boolean(busy.getClaudeDesktop)}
+              onClick={() => runWithBusy('getClaudeDesktop', async () => {
+                try {
+                  const result = await api.openClaudeDownload();
+                  setConfigStatus(`Opened Claude Desktop download page:\n${result.url}`);
+                } catch (error) {
+                  setConfigStatus(`Failed to open Claude Desktop download page:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Get Claude Desktop
+            </button>
+            <button
+              disabled={!nodeReady || Boolean(busy.installCodexCli)}
+              onClick={() => runWithBusy('installCodexCli', async () => {
+                try {
+                  const result = await api.installCodexCli();
+                  setConfigStatus(formatCodexInstallResult(result));
+                  await refreshSetupStatus();
+                } catch (error) {
+                  setConfigStatus(`Codex install failed:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Install Codex CLI
+            </button>
+            <button
+              disabled={Boolean(busy.openCodexDocs)}
+              onClick={() => runWithBusy('openCodexDocs', async () => {
+                try {
+                  const result = await api.openCodexInstallDocs();
+                  setConfigStatus(`Opened Codex install docs:\n${result.url}`);
+                } catch (error) {
+                  setConfigStatus(`Failed to open Codex install docs:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Open Codex Install Docs
+            </button>
+            <button
+              disabled={Boolean(busy.getChatgptDesktop)}
+              onClick={() => runWithBusy('getChatgptDesktop', async () => {
+                try {
+                  const result = await api.openChatgptDownload();
+                  setConfigStatus(`Opened ChatGPT desktop download page:\n${result.url}`);
+                } catch (error) {
+                  setConfigStatus(`Failed to open ChatGPT download page:\n${String(error.message || error)}`);
+                }
+              })}
+            >
+              Get ChatGPT Desktop
+            </button>
+            <button
+              disabled={!nodeReady || !claudeDesktopReady || Boolean(busy.configureClaude)}
               onClick={() => runWithBusy('configureClaude', async () => {
                 try {
                   const result = await api.configureClaude();
@@ -631,7 +993,7 @@ export function App() {
               Restore Claude Backup
             </button>
             <button
-              disabled={Boolean(busy.configureCodex)}
+              disabled={!nodeReady || !codexReady || Boolean(busy.configureCodex)}
               onClick={() => runWithBusy('configureCodex', async () => {
                 try {
                   const result = await api.configureCodex();
@@ -713,6 +1075,8 @@ export function App() {
               Export Claude Skills ZIP
             </button>
           </div>
+          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
+          {aiHostsRequiredHint && <pre className="status-hint">{aiHostsRequiredHint}</pre>}
           <pre className="status-box">{configStatus}</pre>
         </div>
       </section>
@@ -750,7 +1114,7 @@ export function App() {
           </div>
           <div className="actions">
             <button
-              disabled={Boolean(busy.startServer)}
+              disabled={!nodeReady || Boolean(busy.startServer)}
               onClick={() => runWithBusy('startServer', async () => {
                 try {
                   const result = await api.startServer({
@@ -793,6 +1157,7 @@ export function App() {
               Stop Server
             </button>
           </div>
+          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
           <pre className="status-box">{serverStatus}</pre>
           <pre className="log-box">{serverLogs}</pre>
         </div>
@@ -836,7 +1201,7 @@ export function App() {
               Refresh RAG Status
             </button>
             <button
-              disabled={Boolean(busy.ragIndex)}
+              disabled={!nodeReady || Boolean(busy.ragIndex)}
               onClick={() => runWithBusy('ragIndex', async () => {
                 try {
                   const result = await api.ragIndex();
@@ -861,7 +1226,7 @@ export function App() {
               Build/Refresh RAG Index
             </button>
             <button
-              disabled={Boolean(busy.ragQuery)}
+              disabled={!nodeReady || Boolean(busy.ragQuery)}
               onClick={() => runWithBusy('ragQuery', async () => {
                 try {
                   const topKValue = Number(ragTopK);
@@ -880,6 +1245,7 @@ export function App() {
               Run RAG Query
             </button>
           </div>
+          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
           <pre className="status-box">{ragStatus}</pre>
           <pre className="log-box">{ragOutput}</pre>
         </div>
