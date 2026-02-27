@@ -5,6 +5,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
+const isWindows = process.platform === 'win32';
 const repoRoot = path.resolve(__dirname, '../..');
 const mcpServerDir = path.join(repoRoot, 'mcp-server');
 const mcpServerEntrypoint = path.join(mcpServerDir, 'index.js');
@@ -13,30 +14,69 @@ const addonSource = path.join(repoRoot, 'blender-addon', 'claude_modeling_tools.
 const assistantPacksRepoDir = path.join(repoRoot, 'assistant-packs');
 const assistantPacksResourceDir = path.join(process.resourcesPath || '', 'assistant-packs');
 
-const claudeConfigPath = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+const windowsRoamingAppData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+const windowsLocalAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+const windowsProgramFiles = process.env.ProgramFiles || 'C:\\Program Files';
+const windowsProgramFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+
+const claudeConfigPath = isWindows
+  ? path.join(windowsRoamingAppData, 'Claude', 'claude_desktop_config.json')
+  : path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
 const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
-const claudeLocalAgentSkillsPluginRoot = path.join(
-  os.homedir(),
-  'Library',
-  'Application Support',
-  'Claude',
-  'local-agent-mode-sessions',
-  'skills-plugin'
-);
-const blenderScriptsRoot = path.join(os.homedir(), 'Library', 'Application Support', 'Blender');
-const blenderAppPath = '/Applications/Blender.app';
+const claudeLocalAgentSkillsPluginRoot = isWindows
+  ? path.join(windowsRoamingAppData, 'Claude', 'local-agent-mode-sessions', 'skills-plugin')
+  : path.join(
+    os.homedir(),
+    'Library',
+    'Application Support',
+    'Claude',
+    'local-agent-mode-sessions',
+    'skills-plugin'
+  );
+const blenderScriptsRoot = isWindows
+  ? path.join(windowsRoamingAppData, 'Blender Foundation', 'Blender')
+  : path.join(os.homedir(), 'Library', 'Application Support', 'Blender');
+
+const blenderWindowsVersionCandidates = ['5.0', '4.5', '4.4', '4.3', '4.2', '4.1', '4.0'];
+const blenderWindowsInstallRoots = [
+  path.join(windowsProgramFiles, 'Blender Foundation'),
+  path.join(windowsProgramFilesX86, 'Blender Foundation'),
+  path.join(windowsLocalAppData, 'Programs', 'Blender Foundation'),
+];
+const blenderWindowsAppCandidates = [];
+for (const root of blenderWindowsInstallRoots) {
+  blenderWindowsAppCandidates.push(path.join(root, 'Blender', 'blender.exe'));
+  for (const version of blenderWindowsVersionCandidates) {
+    blenderWindowsAppCandidates.push(path.join(root, `Blender ${version}`, 'blender.exe'));
+  }
+}
+
+const blenderAppCandidates = isWindows
+  ? blenderWindowsAppCandidates
+  : ['/Applications/Blender.app'];
+const blenderAppPath = blenderAppCandidates[0];
 const blenderDownloadUrl = 'https://www.blender.org/download/';
 const claudeDesktopDownloadUrl = 'https://claude.ai/download';
 const codexInstallDocsUrl = 'https://github.com/openai/codex#installation';
 const codexNpmPackage = '@openai/codex';
 const chatgptDesktopDownloadUrl = 'https://openai.com/chatgpt/desktop/';
-const claudeDesktopAppCandidates = [
-  '/Applications/Claude.app',
-  '/Applications/Claude Desktop.app',
-];
-const chatgptDesktopAppCandidates = [
-  '/Applications/ChatGPT.app',
-];
+const claudeDesktopAppCandidates = isWindows
+  ? [
+    path.join(windowsLocalAppData, 'Programs', 'Claude', 'Claude.exe'),
+    path.join(windowsProgramFiles, 'Claude', 'Claude.exe'),
+    path.join(windowsProgramFilesX86, 'Claude', 'Claude.exe'),
+  ]
+  : [
+    '/Applications/Claude.app',
+    '/Applications/Claude Desktop.app',
+  ];
+const chatgptDesktopAppCandidates = isWindows
+  ? [
+    path.join(windowsLocalAppData, 'Programs', 'ChatGPT', 'ChatGPT.exe'),
+    path.join(windowsProgramFiles, 'ChatGPT', 'ChatGPT.exe'),
+    path.join(windowsProgramFilesX86, 'ChatGPT', 'ChatGPT.exe'),
+  ]
+  : ['/Applications/ChatGPT.app'];
 // Use the OS per-user temp dir — avoids EACCES collisions when multiple macOS
 // users run the app (sticky bit on /tmp prevents cross-user file writes).
 const tmpRoot = os.tmpdir();
@@ -46,6 +86,7 @@ const blenderResultFile = path.join(tmpRoot, 'blender_result.json');
 const nodeDownloadUrl = 'https://nodejs.org/en/download';
 const nvmReleaseBaseUrl = 'https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4';
 const nvmNodeMajor = '24';
+const wingetNodePackageId = 'OpenJS.NodeJS.LTS';
 
 let mainWindow = null;
 let serverProcess = null;
@@ -58,6 +99,10 @@ const appDisplayName = 'Blender MCP Launcher';
 const toolPathCache = {};
 
 async function runLoginShell(command, options = {}) {
+  if (isWindows) {
+    throw new Error('Login shell execution is not supported on Windows.');
+  }
+
   const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash'].filter(Boolean);
   let lastError = null;
 
@@ -75,7 +120,25 @@ async function runLoginShell(command, options = {}) {
 async function resolveToolPath(tool) {
   if (toolPathCache[tool]) return toolPathCache[tool];
 
-  if (tool === 'node' || tool === 'npm') {
+  if (isWindows) {
+    try {
+      const whereResult = await runCommand('where.exe', [tool]);
+      const whereCandidates = (whereResult.stdout || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      for (const candidate of whereCandidates) {
+        if (fsSync.existsSync(candidate)) {
+          toolPathCache[tool] = candidate;
+          return candidate;
+        }
+      }
+    } catch {
+      // Fall through to known locations.
+    }
+  }
+
+  if (!isWindows && (tool === 'node' || tool === 'npm')) {
     try {
       const nvmResolveCmd = [
         'export NVM_DIR="$HOME/.nvm"',
@@ -94,33 +157,53 @@ async function resolveToolPath(tool) {
     }
   }
 
-  const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash'].filter(Boolean);
-  for (const shell of shells) {
-    try {
-      const result = await new Promise((resolve, reject) => {
-        const child = spawn(shell, ['-l', '-c', `command -v ${tool}`], { env: process.env });
-        let out = '';
-        child.stdout.on('data', (d) => { out += d.toString(); });
-        child.on('close', (code) => (code === 0 ? resolve(out.trim()) : reject()));
-        child.on('error', reject);
-      });
-      if (result && fsSync.existsSync(result)) {
-        toolPathCache[tool] = result;
-        return result;
+  if (!isWindows) {
+    const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash'].filter(Boolean);
+    for (const shell of shells) {
+      try {
+        const result = await new Promise((resolve, reject) => {
+          const child = spawn(shell, ['-l', '-c', `command -v ${tool}`], { env: process.env });
+          let out = '';
+          child.stdout.on('data', (d) => { out += d.toString(); });
+          child.on('close', (code) => (code === 0 ? resolve(out.trim()) : reject()));
+          child.on('error', reject);
+        });
+        if (result && fsSync.existsSync(result)) {
+          toolPathCache[tool] = result;
+          return result;
+        }
+      } catch {
+        // try next shell
       }
-    } catch {
-      // try next shell
     }
   }
 
   // Fall back to common install locations
-  const fallbacks = {
-    npm: ['/opt/homebrew/bin/npm', '/usr/local/bin/npm', '/usr/bin/npm'],
-    node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
-    codex: ['/opt/homebrew/bin/codex', '/usr/local/bin/codex', '/usr/bin/codex'],
-    brew: ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', '/usr/bin/brew'],
-    zip: ['/usr/bin/zip', '/opt/homebrew/bin/zip', '/usr/local/bin/zip'],
-  };
+  const fallbacks = isWindows
+    ? {
+      npm: [
+        path.join(windowsProgramFiles, 'nodejs', 'npm.cmd'),
+        path.join(windowsProgramFilesX86, 'nodejs', 'npm.cmd'),
+        path.join(windowsLocalAppData, 'Programs', 'nodejs', 'npm.cmd'),
+      ],
+      node: [
+        path.join(windowsProgramFiles, 'nodejs', 'node.exe'),
+        path.join(windowsProgramFilesX86, 'nodejs', 'node.exe'),
+        path.join(windowsLocalAppData, 'Programs', 'nodejs', 'node.exe'),
+      ],
+      codex: [
+        path.join(windowsRoamingAppData, 'npm', 'codex.cmd'),
+        path.join(windowsProgramFiles, 'nodejs', 'codex.cmd'),
+      ],
+      winget: ['C:\\Windows\\System32\\winget.exe'],
+    }
+    : {
+      npm: ['/opt/homebrew/bin/npm', '/usr/local/bin/npm', '/usr/bin/npm'],
+      node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
+      codex: ['/opt/homebrew/bin/codex', '/usr/local/bin/codex', '/usr/bin/codex'],
+      brew: ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', '/usr/bin/brew'],
+      zip: ['/usr/bin/zip', '/opt/homebrew/bin/zip', '/usr/local/bin/zip'],
+    };
   for (const candidate of (fallbacks[tool] || [])) {
     if (fsSync.existsSync(candidate)) {
       toolPathCache[tool] = candidate;
@@ -134,14 +217,15 @@ async function resolveToolPath(tool) {
 }
 
 // Build an env that prepends the resolved tool's bin directory to PATH so that
-// npm scripts (which use #!/usr/bin/env node internally) can find their sibling
-// node binary even when Electron's inherited PATH is minimal.
+// npm scripts can find sibling binaries even when Electron's inherited PATH
+// is minimal.
 async function envWithToolPath(tool) {
   const resolved = await resolveToolPath(tool);
   const binDir = resolved !== tool ? path.dirname(resolved) : null;
   const base = process.env.PATH || '';
-  const augmented = binDir && !base.split(':').includes(binDir)
-    ? `${binDir}:${base}`
+  const segments = base.split(path.delimiter);
+  const augmented = binDir && !segments.includes(binDir)
+    ? `${binDir}${path.delimiter}${base}`
     : base;
   return { ...process.env, PATH: augmented };
 }
@@ -480,8 +564,23 @@ async function exportClaudeSkillsZipFromPack() {
       throw new Error('No Claude skills were found to export.');
     }
 
-    const zip = await resolveToolPath('zip');
-    await runCommand(zip, ['-r', zipPath, 'claude-skills'], { cwd: stagingRoot });
+    if (isWindows) {
+      const windowsZipPath = zipPath.replace(/\//g, '\\');
+      await runCommand(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `Compress-Archive -Path 'claude-skills' -DestinationPath '${windowsZipPath.replace(/'/g, "''")}' -Force`,
+        ],
+        { cwd: stagingRoot }
+      );
+    } else {
+      const zip = await resolveToolPath('zip');
+      await runCommand(zip, ['-r', zipPath, 'claude-skills'], { cwd: stagingRoot });
+    }
+
     return {
       zipPath,
       skillsIncluded: included,
@@ -513,8 +612,13 @@ async function autoInstallDeps() {
   try {
     const npm = await resolveToolPath('npm');
     const npmEnv = await envWithToolPath('npm');
+    const npmNeedsShell = isWindows && /\.(cmd|bat)$/i.test(npm);
     await new Promise((resolve, reject) => {
-      const child = spawn(npm, ['install'], { cwd: mcpServerDir, env: npmEnv, shell: false });
+      const child = spawn(npm, ['install'], {
+        cwd: mcpServerDir,
+        env: npmEnv,
+        shell: npmNeedsShell,
+      });
       child.stdout.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
       child.stderr.on('data', (data) => sendLog(`[npm] ${data.toString().trimEnd()}`));
       child.on('close', (code) => {
@@ -589,6 +693,30 @@ async function detectInstalledApp(candidates = []) {
   return null;
 }
 
+async function detectBlenderInstallation() {
+  const candidate = await detectInstalledApp(blenderAppCandidates);
+  if (candidate) return candidate;
+
+  if (!isWindows) return null;
+
+  try {
+    const whereResult = await runCommand('where.exe', ['blender.exe']);
+    const whereCandidates = (whereResult.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (const found of whereCandidates) {
+      if (await fileExists(found)) {
+        return found;
+      }
+    }
+  } catch {
+    // Blender command not found on PATH.
+  }
+
+  return null;
+}
+
 async function probeCodexInstallation() {
   try {
     const codexPath = await resolveToolPath('codex');
@@ -610,6 +738,58 @@ async function probeCodexInstallation() {
   }
 }
 
+async function runWindowsNodeInstallFlow() {
+  try {
+    sendLog(`Installing Node.js with winget package ${wingetNodePackageId}...`);
+    const winget = await resolveToolPath('winget');
+    await runCommand(winget, [
+      'install',
+      '--id',
+      wingetNodePackageId,
+      '--exact',
+      '--silent',
+      '--accept-package-agreements',
+      '--accept-source-agreements',
+    ]);
+
+    delete toolPathCache.node;
+    delete toolPathCache.npm;
+
+    const after = await probeNodeInstallation();
+    if (!after.installed) {
+      throw new Error('winget install completed, but node is still not available to the launcher.');
+    }
+
+    sendLog(`Node.js installed via winget (${after.nodeVersion}).`);
+    return {
+      ok: true,
+      alreadyInstalled: false,
+      method: 'winget',
+      nodeVersion: after.nodeVersion,
+      nodePath: after.nodePath,
+      downloadUrl: nodeDownloadUrl,
+    };
+  } catch (error) {
+    const message = String(error.message || error);
+    const wingetMissing = /winget|not recognized|ENOENT|not found/i.test(message);
+    const friendlyMessage = wingetMissing
+      ? 'winget is unavailable. Install Node.js manually from the official download page.'
+      : message;
+
+    sendLog(`winget Node.js install attempt failed: ${friendlyMessage}`);
+    sendLog(`Node.js install failed. Manual download: ${nodeDownloadUrl}`);
+    return {
+      ok: false,
+      alreadyInstalled: false,
+      method: 'manual',
+      nodeVersion: null,
+      nodePath: null,
+      downloadUrl: nodeDownloadUrl,
+      error: friendlyMessage,
+    };
+  }
+}
+
 async function runNodeInstallFlow() {
   const before = await probeNodeInstallation();
   if (before.installed) {
@@ -622,6 +802,10 @@ async function runNodeInstallFlow() {
       nodePath: before.nodePath,
       downloadUrl: nodeDownloadUrl,
     };
+  }
+
+  if (isWindows) {
+    return runWindowsNodeInstallFlow();
   }
 
   try {
@@ -728,10 +912,14 @@ async function getRagStatus() {
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const shellOverride = Object.prototype.hasOwnProperty.call(options, 'shell')
+      ? options.shell
+      : (isWindows && /\.(cmd|bat)$/i.test(command));
+
     const child = spawn(command, args, {
       ...options,
       env: { ...process.env, ...(options.env || {}) },
-      shell: false,
+      shell: shellOverride,
     });
 
     let stdout = '';
@@ -992,6 +1180,7 @@ async function checkSetupStatus() {
   const claudeBackups = await listBackups('claude');
   const codexBackups = await listBackups('codex');
   const ragStatus = await getRagStatus();
+  const blenderDetectedPath = await detectBlenderInstallation();
   const claudeDesktopPath = await detectInstalledApp(claudeDesktopAppCandidates);
   const chatgptDesktopPath = await detectInstalledApp(chatgptDesktopAppCandidates);
   const codexProbe = await probeCodexInstallation();
@@ -1036,6 +1225,7 @@ async function checkSetupStatus() {
       ragStoreError: ragStatus.error,
       claudeDesktopPath,
       chatgptDesktopPath,
+      blenderDetectedPath,
       codexPath: codexProbe.codexPath,
       codexVersion: codexProbe.codexVersion,
       codexInstallError: codexProbe.error,
@@ -1048,7 +1238,8 @@ async function checkSetupStatus() {
     ? nodeProbe.nodeVersion
     : `Not installed (${nodeProbe.error})`;
 
-  status.checks.blenderInstalled = await fileExists(blenderAppPath);
+  status.paths.blenderAppPath = blenderDetectedPath || blenderAppPath;
+  status.checks.blenderInstalled = Boolean(blenderDetectedPath);
   status.checks.claudeDesktopInstalled = Boolean(claudeDesktopPath);
   status.checks.codexCliInstalled = codexProbe.installed;
   status.checks.chatgptDesktopInstalled = Boolean(chatgptDesktopPath);
@@ -1286,16 +1477,18 @@ ipcMain.handle('setup:export-claude-skills-zip', async () => {
 });
 
 ipcMain.handle('app:launch-blender', async () => {
-  if (!(await fileExists(blenderAppPath))) {
-    throw new Error(`Blender not found at ${blenderAppPath}`);
+  const detectedPath = await detectBlenderInstallation();
+  if (!detectedPath) {
+    const attempted = blenderAppCandidates.slice(0, 8).join('\n');
+    throw new Error(`Blender not found. Checked common locations:\n${attempted}`);
   }
 
-  const openError = await shell.openPath(blenderAppPath);
+  const openError = await shell.openPath(detectedPath);
   if (openError) {
     throw new Error(`Failed to launch Blender: ${openError}`);
   }
   sendLog('Blender launched.');
-  return { launched: true, blenderAppPath };
+  return { launched: true, blenderAppPath: detectedPath };
 });
 
 ipcMain.handle('app:open-blender-download', async () => {

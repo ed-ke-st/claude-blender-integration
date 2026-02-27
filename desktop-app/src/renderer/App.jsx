@@ -71,7 +71,9 @@ function formatNodeInstallResult(result) {
   }
 
   if (result.ok) {
-    const methodLabel = result.method === 'nvm' ? 'via nvm' : '';
+    const methodLabel = result.method === 'nvm'
+      ? 'via nvm'
+      : (result.method === 'winget' ? 'via winget' : '');
     return [
       `Node.js installed successfully ${methodLabel} (${result.nodeVersion || 'version unknown'}).`,
       result.nodePath ? `Path: ${result.nodePath}` : '',
@@ -770,7 +772,7 @@ export function App() {
                     {statusPill(setupChecks?.nodeInstalled)}
                   </div>
                   <div className="check-item">
-                    <span>Blender found on this Mac</span>
+                    <span>Blender found on this computer</span>
                     {statusPill(setupChecks?.blenderInstalled)}
                   </div>
                   <div className="check-item">
@@ -1152,7 +1154,7 @@ export function App() {
           <img src={appIcon} alt="" className="app-title-icon" />
           <div>
             <h1>Blender MCP Launcher</h1>
-            <p>Mac control panel for setup, configuration, and MCP server runtime.</p>
+            <p>Desktop control panel for setup, configuration, and MCP server runtime.</p>
           </div>
         </div>
         <button className="ghost" onClick={() => setShowOnboarding(true)}>Show onboarding</button>
