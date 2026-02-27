@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import appIcon from './assets/app-icon.svg';
 
 const ONBOARDING_COMPLETE_KEY = 'blenderMcpLauncher.onboardingComplete.v1';
@@ -130,6 +130,51 @@ function statusPill(value, goodText = 'Ready', badText = 'Pending') {
   return <span className="pill">{badText}</span>;
 }
 
+function collectRemainingSetupItems(status) {
+  const checks = status?.checks;
+  if (!checks) return [];
+
+  const remaining = [];
+
+  if (!checks.nodeInstalled) {
+    remaining.push('Install Node.js in setup (if prompted, install Xcode Command Line Tools first).');
+  }
+
+  if (!checks.blenderInstalled) {
+    remaining.push('Install Blender from the official download page.');
+  }
+
+  if (checks.nodeInstalled && !checks.mcpDependenciesInstalled) {
+    remaining.push('Install MCP server dependencies.');
+  }
+
+  if (!checks.addonInstalled) {
+    remaining.push('Install the Blender addon, then enable "Claude Modelling Tools" in Blender.');
+  }
+
+  if (!checks.claudeDesktopInstalled) {
+    remaining.push('Install Claude Desktop.');
+  } else if (checks.nodeInstalled && !checks.claudeConfigExists) {
+    remaining.push('Connect Claude Desktop from setup (writes launcher MCP config).');
+  }
+
+  if (checks.nodeInstalled && !checks.codexCliInstalled) {
+    remaining.push('Install Codex CLI.');
+  } else if (checks.nodeInstalled && checks.codexCliInstalled && !checks.codexConfigExists) {
+    remaining.push('Connect Codex from setup (writes launcher MCP config).');
+  }
+
+  if (!checks.chatgptDesktopInstalled) {
+    remaining.push('Install ChatGPT desktop app (optional).');
+  }
+
+  if (checks.nodeInstalled && !checks.ragIndexPresent) {
+    remaining.push('Build the local RAG index.');
+  }
+
+  return remaining;
+}
+
 export function App() {
   const [setupStatus, setSetupStatus] = useState('Run "Refresh Status" to inspect your environment.');
   const [configStatus, setConfigStatus] = useState('Click a button to write/update config files.');
@@ -158,6 +203,8 @@ export function App() {
   const [guideStep, setGuideStep] = useState(0);
   const [guideMessage, setGuideMessage] = useState('');
   const [guideError, setGuideError] = useState('');
+  const [guideRunAllState, setGuideRunAllState] = useState(null);
+  const nodeInstallStateRef = useRef(null);
 
   const api = useMemo(() => window.launcherApi, []);
 
@@ -235,6 +282,7 @@ export function App() {
     });
 
     const unsubNodeInstall = api.onNodeInstallState((state) => {
+      nodeInstallStateRef.current = state;
       setNodeInstallState(state);
       if (!state?.installing) {
         if (state?.result) {
@@ -294,6 +342,271 @@ export function App() {
     });
   };
 
+  const runGuideAllSteps = async () => {
+    if (busy.guideRunAllSetup) return;
+    setGuideError('');
+    setGuideMessage('');
+
+    await runWithBusy('guideRunAllSetup', async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const entries = [];
+
+      let setup = await refreshSetupStatus();
+      const runPlan = {
+        installNode: !setup.checks.nodeInstalled,
+        installDependencies: !setup.checks.mcpDependenciesInstalled,
+        installAddon: !setup.checks.addonInstalled,
+        installCodexCli: !setup.checks.codexCliInstalled,
+        connectClaude: !setup.checks.claudeConfigExists,
+        connectCodex: !setup.checks.codexConfigExists,
+        buildRagIndex: !setup.checks.ragIndexPresent,
+      };
+
+      const plannedTasks = [
+        'Check environment',
+        runPlan.installNode ? 'Install Node.js' : null,
+        runPlan.installDependencies ? 'Install dependencies' : null,
+        runPlan.installAddon ? 'Install Blender addon' : null,
+        runPlan.installCodexCli ? 'Install Codex CLI' : null,
+        runPlan.connectClaude ? 'Connect Claude Desktop' : null,
+        runPlan.connectCodex ? 'Connect Codex' : null,
+        runPlan.buildRagIndex ? 'Build RAG index' : null,
+        'Finalize checks',
+      ].filter(Boolean);
+
+      const total = plannedTasks.length;
+      let completed = 0;
+      setGuideRunAllState({
+        running: true,
+        current: 'Preparing setup plan…',
+        total,
+        completed,
+        entries: [],
+        remaining: [],
+      });
+
+      const pushEntry = (entry) => {
+        entries.push(entry);
+        completed += 1;
+        setGuideRunAllState({
+          running: true,
+          current: entry.label,
+          total,
+          completed,
+          entries: [...entries],
+          remaining: [],
+        });
+      };
+
+      const runTask = async (label, fn) => {
+        setGuideRunAllState({
+          running: true,
+          current: label,
+          total,
+          completed,
+          entries: [...entries],
+          remaining: [],
+        });
+        try {
+          await fn();
+          pushEntry({ label, status: 'done', detail: '' });
+        } catch (error) {
+          pushEntry({ label, status: 'failed', detail: String(error.message || error) });
+        }
+      };
+
+      await runTask('Check environment', async () => {
+        setup = await refreshSetupStatus();
+      });
+
+      if (runPlan.installNode) {
+        await runTask('Install Node.js', async () => {
+          nodeInstallStateRef.current = { installing: true, error: null, result: null };
+          await api.installNode();
+
+          const timeoutMs = 9 * 60 * 1000;
+          const startedAt = Date.now();
+          while (Date.now() - startedAt < timeoutMs) {
+            const nodeState = nodeInstallStateRef.current;
+            if (nodeState && nodeState.installing === false && nodeState.error) {
+              throw new Error(nodeState.error);
+            }
+
+            setup = await refreshSetupStatus();
+            if (setup.checks.nodeInstalled) return;
+            await wait(1500);
+          }
+
+          throw new Error('Timed out waiting for Node.js installation.');
+        });
+      }
+
+      setup = await refreshSetupStatus();
+      if (runPlan.installDependencies) {
+        if (setup.checks.mcpDependenciesInstalled) {
+          pushEntry({
+            label: 'Install dependencies',
+            status: 'skipped',
+            detail: 'Skipped because dependencies were already installed.',
+          });
+        } else if (!setup.checks.nodeInstalled) {
+          pushEntry({
+            label: 'Install dependencies',
+            status: 'skipped',
+            detail: 'Skipped because Node.js is not installed.',
+          });
+        } else {
+          await runTask('Install dependencies', async () => {
+            await api.installDependencies();
+            setup = await refreshSetupStatus();
+          });
+        }
+      }
+
+      setup = await refreshSetupStatus();
+      if (runPlan.installAddon) {
+        if (setup.checks.addonInstalled) {
+          pushEntry({
+            label: 'Install Blender addon',
+            status: 'skipped',
+            detail: 'Skipped because addon is already installed.',
+          });
+        } else {
+          await runTask('Install Blender addon', async () => {
+            await api.installAddon();
+            setup = await refreshSetupStatus();
+          });
+        }
+      }
+
+      setup = await refreshSetupStatus();
+      if (runPlan.installCodexCli) {
+        if (setup.checks.codexCliInstalled) {
+          pushEntry({
+            label: 'Install Codex CLI',
+            status: 'skipped',
+            detail: 'Skipped because Codex CLI is already installed.',
+          });
+        } else if (!setup.checks.nodeInstalled) {
+          pushEntry({
+            label: 'Install Codex CLI',
+            status: 'skipped',
+            detail: 'Skipped because Node.js is not installed.',
+          });
+        } else {
+          await runTask('Install Codex CLI', async () => {
+            const result = await api.installCodexCli();
+            if (result && result.ok === false) {
+              throw new Error(result.error || 'Automatic Codex CLI installation did not complete.');
+            }
+            setup = await refreshSetupStatus();
+          });
+        }
+      }
+
+      setup = await refreshSetupStatus();
+      if (runPlan.connectClaude) {
+        if (setup.checks.claudeConfigExists) {
+          pushEntry({
+            label: 'Connect Claude Desktop',
+            status: 'skipped',
+            detail: 'Skipped because Claude Desktop is already connected.',
+          });
+        } else if (!setup.checks.nodeInstalled) {
+          pushEntry({
+            label: 'Connect Claude Desktop',
+            status: 'skipped',
+            detail: 'Skipped because Node.js is not installed.',
+          });
+        } else if (!setup.checks.claudeDesktopInstalled) {
+          pushEntry({
+            label: 'Connect Claude Desktop',
+            status: 'skipped',
+            detail: 'Skipped because Claude Desktop is not installed.',
+          });
+        } else {
+          await runTask('Connect Claude Desktop', async () => {
+            await api.configureClaude();
+            setup = await refreshSetupStatus();
+          });
+        }
+      }
+
+      setup = await refreshSetupStatus();
+      if (runPlan.connectCodex) {
+        if (setup.checks.codexConfigExists) {
+          pushEntry({
+            label: 'Connect Codex',
+            status: 'skipped',
+            detail: 'Skipped because Codex is already connected.',
+          });
+        } else if (!setup.checks.nodeInstalled) {
+          pushEntry({
+            label: 'Connect Codex',
+            status: 'skipped',
+            detail: 'Skipped because Node.js is not installed.',
+          });
+        } else if (!setup.checks.codexCliInstalled) {
+          pushEntry({
+            label: 'Connect Codex',
+            status: 'skipped',
+            detail: 'Skipped because Codex CLI is not installed.',
+          });
+        } else {
+          await runTask('Connect Codex', async () => {
+            await api.configureCodex();
+            setup = await refreshSetupStatus();
+          });
+        }
+      }
+
+      setup = await refreshSetupStatus();
+      if (runPlan.buildRagIndex) {
+        if (setup.checks.ragIndexPresent) {
+          pushEntry({
+            label: 'Build RAG index',
+            status: 'skipped',
+            detail: 'Skipped because a RAG index is already present.',
+          });
+        } else if (!setup.checks.nodeInstalled) {
+          pushEntry({
+            label: 'Build RAG index',
+            status: 'skipped',
+            detail: 'Skipped because Node.js is not installed.',
+          });
+        } else {
+          await runTask('Build RAG index', async () => {
+            await api.ragIndex();
+            await refreshRagStatus();
+            setup = await refreshSetupStatus();
+          });
+        }
+      }
+
+      await runTask('Finalize checks', async () => {
+        setup = await refreshSetupStatus();
+      });
+
+      const remaining = collectRemainingSetupItems(setup);
+      setGuideRunAllState({
+        running: false,
+        current: remaining.length
+          ? 'Automated setup finished with manual follow-up items.'
+          : 'Automated setup finished.',
+        total,
+        completed,
+        entries: [...entries],
+        remaining,
+      });
+
+      if (remaining.length) {
+        setGuideMessage('Run-all finished. Review remaining manual items below.');
+      } else {
+        setGuideMessage('Run-all finished. Your environment looks ready.');
+      }
+    });
+  };
+
   const selectedTmpLabel = useMemo(() => {
     const current = tmpFiles.find((file) => file.path === selectedTmpFile);
     return current ? `${current.name} (${current.size} bytes, ${current.modifiedAt})` : '';
@@ -317,6 +630,10 @@ export function App() {
     !codexReady ? 'Codex CLI not detected. Use "Install Codex CLI" (or open install docs).' : null,
     !chatgptDesktopReady ? 'ChatGPT desktop not detected. Use "Get ChatGPT Desktop".' : null,
   ].filter(Boolean).join('\n');
+  const guideAutomationRunning = Boolean(busy.guideRunAllSetup);
+  const guideRunAllPercent = guideRunAllState && guideRunAllState.total > 0
+    ? Math.round((guideRunAllState.completed / guideRunAllState.total) * 100)
+    : 0;
 
   const addonActivationSteps = (
     <div className="addon-steps">
@@ -384,6 +701,7 @@ export function App() {
               <button
                 key={step.title}
                 className={index === guideStep ? 'step active' : 'step'}
+                disabled={guideAutomationRunning}
                 onClick={() => setGuideStep(index)}
               >
                 <span className="step-number">{index + 1}</span>
@@ -395,10 +713,52 @@ export function App() {
           <div className="guide-panel">
             <h2>{onboardingSteps[guideStep].title}</h2>
             <p>{onboardingSteps[guideStep].body}</p>
+            <div className="guide-run-all">
+              <button
+                disabled={guideAutomationRunning}
+                onClick={runGuideAllSteps}
+              >
+                {guideAutomationRunning ? 'Running full setup…' : 'Run all setup steps'}
+              </button>
+              <span className="guide-run-all-label">
+                {guideRunAllState
+                  ? `${guideRunAllState.completed}/${guideRunAllState.total} step(s) processed`
+                  : 'Runs all non-interactive setup steps in order.'}
+              </span>
+            </div>
+
+            {guideRunAllState && (
+              <div className="guide-progress">
+                <div className="guide-progress-head">
+                  <strong>{guideRunAllState.current || 'Preparing…'}</strong>
+                  <span>{guideRunAllPercent}%</span>
+                </div>
+                <div
+                  className="guide-progress-track"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={guideRunAllPercent}
+                >
+                  <div className="guide-progress-fill" style={{ width: `${guideRunAllPercent}%` }} />
+                </div>
+                {guideRunAllState.entries.length > 0 && (
+                  <div className="guide-progress-entries">
+                    {guideRunAllState.entries.slice(-7).map((entry, index) => (
+                      <div key={`${entry.label}-${index}`} className={`guide-progress-entry ${entry.status}`}>
+                        <span>{entry.label}</span>
+                        <span>{entry.status}</span>
+                        {entry.detail && <small>{entry.detail}</small>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {guideStep === 0 && (
               <div className="guide-actions">
-                <button onClick={() => setGuideStep(1)}>Start setup</button>
+                <button disabled={guideAutomationRunning} onClick={() => setGuideStep(1)}>Start setup</button>
               </div>
             )}
 
@@ -749,17 +1109,27 @@ export function App() {
 
             {guideMessage && <div className="guide-note success">{guideMessage}</div>}
             {guideError && <div className="guide-note error">{guideError}</div>}
+            {guideRunAllState && !guideRunAllState.running && guideRunAllState.remaining.length > 0 && (
+              <div className="guide-note error">
+                <strong>Still needed:</strong>
+                <ul className="guide-remaining-list">
+                  {guideRunAllState.remaining.map((item, index) => (
+                    <li key={`${item}-${index}`}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="guide-nav">
               <button
                 className="ghost"
-                disabled={guideStep === 0}
+                disabled={guideStep === 0 || guideAutomationRunning}
                 onClick={() => setGuideStep((current) => Math.max(0, current - 1))}
               >
                 Back
               </button>
               <button
-                disabled={guideStep === onboardingSteps.length - 1}
+                disabled={guideStep === onboardingSteps.length - 1 || guideAutomationRunning}
                 onClick={() => setGuideStep((current) => Math.min(onboardingSteps.length - 1, current + 1))}
               >
                 Next
