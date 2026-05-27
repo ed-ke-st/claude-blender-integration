@@ -4,6 +4,7 @@ const fsSync = require('fs');
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
+const { pathToFileURL } = require('url');
 
 const isWindows = process.platform === 'win32';
 const repoRoot = path.resolve(__dirname, '../..');
@@ -138,7 +139,7 @@ async function resolveToolPath(tool) {
     }
   }
 
-  if (!isWindows && (tool === 'node' || tool === 'npm')) {
+  if (!isWindows && (tool === 'node' || tool === 'npm' || tool === 'codex' || tool === 'claude')) {
     try {
       const nvmResolveCmd = [
         'export NVM_DIR="$HOME/.nvm"',
@@ -195,12 +196,17 @@ async function resolveToolPath(tool) {
         path.join(windowsRoamingAppData, 'npm', 'codex.cmd'),
         path.join(windowsProgramFiles, 'nodejs', 'codex.cmd'),
       ],
+      claude: [
+        path.join(windowsRoamingAppData, 'npm', 'claude.cmd'),
+        path.join(os.homedir(), '.local', 'bin', 'claude'),
+      ],
       winget: ['C:\\Windows\\System32\\winget.exe'],
     }
     : {
       npm: ['/opt/homebrew/bin/npm', '/usr/local/bin/npm', '/usr/bin/npm'],
       node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
       codex: ['/opt/homebrew/bin/codex', '/usr/local/bin/codex', '/usr/bin/codex'],
+      claude: [path.join(os.homedir(), '.local', 'bin', 'claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude', '/usr/bin/claude'],
       brew: ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', '/usr/bin/brew'],
       zip: ['/usr/bin/zip', '/opt/homebrew/bin/zip', '/usr/local/bin/zip'],
     };
@@ -216,16 +222,21 @@ async function resolveToolPath(tool) {
   return tool;
 }
 
-// Build an env that prepends the resolved tool's bin directory to PATH so that
-// npm scripts can find sibling binaries even when Electron's inherited PATH
-// is minimal.
-async function envWithToolPath(tool) {
-  const resolved = await resolveToolPath(tool);
-  const binDir = resolved !== tool ? path.dirname(resolved) : null;
+// Build an env that prepends resolved tool bin directories to PATH so that
+// npm-installed CLIs and their shebangs can find sibling binaries even when
+// Electron's inherited PATH is minimal.
+async function envWithToolPath(tool, companionTools = []) {
+  const requestedTools = [tool, ...companionTools];
+  const resolvedTools = await Promise.all(requestedTools.map(resolveToolPath));
+  const binDirs = resolvedTools
+    .filter((resolved, index) => resolved !== requestedTools[index])
+    .map((resolved) => path.dirname(resolved))
+    .filter((binDir, index, all) => all.indexOf(binDir) === index);
   const base = process.env.PATH || '';
   const segments = base.split(path.delimiter);
-  const augmented = binDir && !segments.includes(binDir)
-    ? `${binDir}${path.delimiter}${base}`
+  const missingSegments = binDirs.filter((binDir) => !segments.includes(binDir));
+  const augmented = missingSegments.length
+    ? `${missingSegments.join(path.delimiter)}${path.delimiter}${base}`
     : base;
   return { ...process.env, PATH: augmented };
 }
@@ -247,6 +258,17 @@ function getBackupRoot() {
 function sendLog(message) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send('server-log', `${new Date().toISOString()} ${message}`);
+}
+
+function sendAgentRunProgress(requestId, type, message, extra = {}) {
+  if (!requestId || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('agent-run-progress', {
+    requestId,
+    type,
+    message: String(message || ''),
+    timestamp: new Date().toISOString(),
+    ...extra,
+  });
 }
 
 function sendInstallState(state) {
@@ -654,6 +676,894 @@ async function runRagCli(args = []) {
   return runCommand(node, ['rag/cli.js', ...args], { cwd: mcpServerDir, env: nodeEnv });
 }
 
+function loadMcpServerModule(relativePath) {
+  return import(pathToFileURL(path.join(mcpServerDir, relativePath)).href);
+}
+
+function normalizePromptTopK(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 5;
+  }
+  return Math.max(1, Math.min(8, Math.floor(parsed)));
+}
+
+function normalizePromptProvider(value) {
+  return value === 'gemini' ? 'gemini' : 'openai';
+}
+
+function normalizeCodexSandbox(value) {
+  return ['read-only', 'workspace-write', 'danger-full-access'].includes(value)
+    ? value
+    : 'workspace-write';
+}
+
+function normalizeCodexApproval(value) {
+  return ['untrusted', 'on-request', 'never'].includes(value)
+    ? value
+    : 'never';
+}
+
+function normalizeClaudePermissionMode(value) {
+  return ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'].includes(value)
+    ? value
+    : 'acceptEdits';
+}
+
+function blenderClaudeAllowedTools() {
+  return [
+    'mcp__blender__create_in_blender',
+    'mcp__blender__get_blender_result',
+    'mcp__blender__debug_blender_error',
+    'mcp__blender__retrieve_context',
+  ];
+}
+
+function defaultPromptModel(provider) {
+  return provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4.1-mini';
+}
+
+function formatRetrievedChunksForPrompt(result) {
+  if (!result || !Array.isArray(result.results) || result.results.length === 0) {
+    return '';
+  }
+
+  return [
+    'Repository context:',
+    ...result.results.map((item, index) => (
+      `[${index + 1}] ${item.file_path}:${item.start_line}-${item.end_line}\n${item.chunk_text || item.excerpt || ''}`
+    )),
+  ].join('\n\n');
+}
+
+function normalizePromptHistory(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => {
+      const prompt = String(entry?.prompt || '').trim();
+      const summary = String(entry?.summary || '').trim();
+      const provider = String(entry?.provider || '').trim() || 'openai';
+      const model = String(entry?.model || '').trim();
+      const timestamp = String(entry?.timestamp || '').trim();
+
+      if (!prompt && !summary) {
+        return null;
+      }
+
+      return {
+        prompt,
+        summary,
+        provider,
+        model,
+        timestamp,
+      };
+    })
+    .filter(Boolean)
+    .slice(-6);
+}
+
+function formatConversationHistoryForPrompt(history) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return '';
+  }
+
+  return history.map((entry, index) => {
+    const lines = [
+      `[${index + 1}] User request: ${entry.prompt || '(missing prompt)'}`,
+    ];
+
+    if (entry.summary) {
+      lines.push(`Outcome:\n${entry.summary}`);
+    }
+
+    if (entry.provider || entry.model) {
+      lines.push(`Provider/model: ${entry.provider}${entry.model ? ` / ${entry.model}` : ''}`);
+    }
+
+    if (entry.timestamp) {
+      lines.push(`Timestamp: ${entry.timestamp}`);
+    }
+
+    return lines.join('\n');
+  }).join('\n\n');
+}
+
+function formatNumberList(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return '(unknown)';
+  }
+
+  return values.map((value) => (
+    Number.isFinite(value) ? Number(value).toFixed(4).replace(/\.?0+$/, '') : String(value)
+  )).join(', ');
+}
+
+function formatSceneObjectForPrompt(object, index) {
+  const name = String(object?.name || `Object ${index + 1}`);
+  const type = String(object?.type || 'UNKNOWN');
+  const parts = [`${index + 1}. ${name} (${type})`];
+
+  if (Array.isArray(object?.location)) {
+    parts.push(`location=[${formatNumberList(object.location)}]`);
+  }
+  if (Array.isArray(object?.dimensions)) {
+    parts.push(`dimensions=[${formatNumberList(object.dimensions)}]`);
+  }
+  if (Number.isFinite(object?.vertices)) {
+    parts.push(`verts=${object.vertices}`);
+  }
+  if (Number.isFinite(object?.faces)) {
+    parts.push(`faces=${object.faces}`);
+  }
+
+  return parts.join(', ');
+}
+
+function formatSceneSnapshotForPrompt(snapshot) {
+  const result = snapshot?.result;
+  if (!result || typeof result !== 'object') {
+    return '';
+  }
+
+  const sceneObjects = Array.isArray(result.scene_objects) ? result.scene_objects : [];
+  const collections = Array.isArray(result.collections) ? result.collections : [];
+  const sceneConventions = result.scene_conventions || {};
+  const visibleObjects = sceneObjects.slice(0, 20);
+  const lines = [
+    `Scene status: ${result.status || 'unknown'}`,
+    `Scene object count: ${sceneObjects.length}`,
+    `Collections: ${collections.length ? collections.slice(0, 12).join(', ') : '(none)'}`,
+  ];
+
+  if (collections.length > 12) {
+    lines.push(`Additional collections omitted: ${collections.length - 12}`);
+  }
+
+  if (sceneConventions && typeof sceneConventions === 'object') {
+    lines.push(
+      `Scene conventions: up=${sceneConventions.up_axis || '?'}, forward=${sceneConventions.forward_axis || '?'}, right=${sceneConventions.right_axis || '?'}, units=${sceneConventions.units || '?'}, scale=${sceneConventions.unit_scale ?? '?'}`
+    );
+  }
+
+  if (visibleObjects.length > 0) {
+    lines.push('Objects:');
+    lines.push(...visibleObjects.map((object, index) => formatSceneObjectForPrompt(object, index)));
+  } else {
+    lines.push('Objects: (scene is empty)');
+  }
+
+  if (sceneObjects.length > visibleObjects.length) {
+    lines.push(`Additional objects omitted: ${sceneObjects.length - visibleObjects.length}`);
+  }
+
+  return lines.join('\n');
+}
+
+function normalizeAgentMaxAttempts(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 3;
+  }
+  return Math.max(1, Math.min(4, Math.floor(parsed)));
+}
+
+function summarizeBlenderResultForAttempt(result) {
+  if (!result || typeof result !== 'object') {
+    return 'Blender result payload was not available.';
+  }
+
+  const createdObjects = Array.isArray(result.objects_created) ? result.objects_created : [];
+  const sceneObjects = Array.isArray(result.scene_objects) ? result.scene_objects : [];
+  return [
+    `Blender status: ${result.status || 'unknown'}`,
+    result.message ? `Message: ${result.message}` : null,
+    result.error ? `Error: ${result.error}` : null,
+    createdObjects.length ? `Objects created: ${createdObjects.join(', ')}` : null,
+    `Scene objects reported: ${sceneObjects.length}`,
+  ].filter(Boolean).join('\n');
+}
+
+function formatAttemptTraceForPrompt(attempts) {
+  if (!Array.isArray(attempts) || attempts.length === 0) {
+    return '';
+  }
+
+  return attempts.map((attempt) => [
+    `ATTEMPT ${attempt.attempt}/${attempt.maxAttempts}: ${attempt.status}`,
+    attempt.message ? `Message: ${attempt.message}` : null,
+    Array.isArray(attempt.validationErrors) && attempt.validationErrors.length
+      ? `Validation errors:\n- ${attempt.validationErrors.join('\n- ')}`
+      : null,
+    attempt.blenderSummary || null,
+  ].filter(Boolean).join('\n')).join('\n\n');
+}
+
+function buildAttemptContext({ userContext = '', attemptNumber, maxAttempts, attempts = [] }) {
+  const parts = [];
+
+  if (userContext) {
+    parts.push(userContext);
+  }
+
+  parts.push(
+    `Agent loop mode is enabled. You are generating attempt ${attemptNumber} of ${maxAttempts}. Return a complete Blender Python script for this attempt.`
+  );
+
+  if (attempts.length > 0) {
+    parts.push(`Previous tool results:\n${formatAttemptTraceForPrompt(attempts)}`);
+    parts.push('Fix the exact failure from the previous attempt. Do not repeat the same broken approach.');
+  }
+
+  return parts.join('\n\n');
+}
+
+function buildAttemptTraceEntry({
+  attemptNumber,
+  maxAttempts,
+  stage = 'execution',
+  execution = null,
+  error = null,
+} = {}) {
+  const validationErrors = Array.isArray(error?.validationErrors) ? error.validationErrors : [];
+  const pending = Boolean(execution?.pending);
+  const blenderResult = execution?.result || null;
+  const blenderStatus = pending ? 'pending' : String(blenderResult?.status || '');
+  const status = error
+    ? (stage === 'generation'
+      ? 'generation_error'
+      : (validationErrors.length ? 'validation_error' : 'execution_error'))
+    : (pending ? 'pending' : (blenderStatus || 'unknown'));
+  const message = error
+    ? String(error.message || error)
+    : String(blenderResult?.error || blenderResult?.message || '');
+
+  return {
+    attempt: attemptNumber,
+    maxAttempts,
+    stage,
+    status,
+    message,
+    requestId: execution?.requestId || '',
+    pending,
+    validationErrors,
+    blenderStatus,
+    blenderSummary: pending
+      ? 'Blender result is pending.'
+      : summarizeBlenderResultForAttempt(blenderResult),
+  };
+}
+
+async function runInAppPrompt(options = {}) {
+  const progressRequestId = String(options.requestId || '').trim();
+  const progress = (type, message, extra) => sendAgentRunProgress(progressRequestId, type, message, extra);
+  const provider = normalizePromptProvider(options.provider);
+  const prompt = String(options.prompt || '').trim();
+  const userContext = String(options.context || '').trim();
+  const apiKey = String(
+    options.apiKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY : process.env.OPENAI_API_KEY) || ''
+  ).trim();
+  const useRag = Boolean(options.useRag);
+  const useHistory = options.useHistory !== false;
+  const useSceneSnapshot = options.useSceneSnapshot !== false;
+  const agentMode = Boolean(options.agentMode);
+  const maxAttempts = agentMode ? normalizeAgentMaxAttempts(options.maxAttempts) : 1;
+  const model = String(options.model || '').trim() || defaultPromptModel(provider);
+  const conversationHistory = useHistory ? normalizePromptHistory(options.history) : [];
+
+  if (!prompt) {
+    throw new Error('Prompt text is required.');
+  }
+
+  if (!apiKey) {
+    throw new Error(provider === 'gemini'
+      ? 'Gemini API key is required for in-app prompting.'
+      : 'OpenAI API key is required for in-app prompting.');
+  }
+
+  if (!(await fileExists(path.join(mcpServerDir, 'node_modules')))) {
+    throw new Error('MCP server dependencies are not installed yet. Run "Install MCP Dependencies" first.');
+  }
+
+  progress('status', 'Preparing direct Blender prompt run.');
+
+  let ragResult = null;
+  let ragContext = '';
+  let ragWarning = '';
+  let sceneSnapshot = null;
+  let sceneSnapshotContext = '';
+  let sceneWarning = '';
+  if (useRag) {
+    progress('status', 'Retrieving local RAG context.');
+    if (await fileExists(ragStorePath)) {
+      const queryText = [prompt, userContext].filter(Boolean).join('\n\n');
+      const { retrieveContext } = await loadMcpServerModule(path.join('rag', 'retriever.js'));
+      ragResult = await retrieveContext({
+        query: queryText,
+        topK: normalizePromptTopK(options.ragTopK),
+        repoRoot,
+      });
+      ragContext = formatRetrievedChunksForPrompt(ragResult);
+      progress('status', `Retrieved ${Array.isArray(ragResult?.results) ? ragResult.results.length : 0} RAG match(es).`);
+    } else {
+      ragWarning = `Local RAG index not found at ${ragStorePath}. Build the index from the launcher to include repository context.`;
+      sendLog(`In-app prompt RAG skipped: ${ragWarning}`);
+      progress('warning', 'RAG skipped because no local index was found.');
+    }
+  }
+
+  if (useSceneSnapshot) {
+    try {
+      progress('status', 'Collecting live Blender scene snapshot.');
+      sceneSnapshot = await fetchLiveSceneSnapshot();
+      sceneSnapshotContext = formatSceneSnapshotForPrompt(sceneSnapshot);
+      progress('status', `Scene snapshot collected (${Array.isArray(sceneSnapshot?.result?.scene_objects) ? sceneSnapshot.result.scene_objects.length : 0} object(s)).`);
+    } catch (error) {
+      sceneWarning = `Live Blender scene snapshot failed: ${String(error.message || error)}`;
+      sendLog(`In-app prompt scene snapshot skipped: ${sceneWarning}`);
+      progress('warning', 'Scene snapshot skipped; Blender did not return a live snapshot.');
+    }
+  }
+
+  const historyContext = formatConversationHistoryForPrompt(conversationHistory);
+
+  sendLog(`In-app prompt started (provider=${provider}, model=${model}, rag=${useRag ? 'on' : 'off'}, history=${conversationHistory.length}, snapshot=${useSceneSnapshot ? 'on' : 'off'}, agent=${agentMode ? `on/${maxAttempts}` : 'off'}).`);
+
+  const generationModule = provider === 'gemini'
+    ? 'gemini-generation.js'
+    : 'openai-generation.js';
+  const { generateCode } = await loadMcpServerModule(generationModule);
+  const { executeCreateInBlender } = await loadMcpServerModule('blender-exec.js');
+  const attempts = [];
+  let code = '';
+  let execution = null;
+  let failureMessage = '';
+  let agentOutcome = agentMode ? 'pending' : 'single_pass';
+
+  for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber += 1) {
+    const attemptContext = agentMode
+      ? buildAttemptContext({
+        userContext,
+        attemptNumber,
+        maxAttempts,
+        attempts,
+      })
+      : userContext;
+
+    sendLog(`In-app prompt attempt ${attemptNumber}/${maxAttempts}: generating Blender code.`);
+    progress('status', `Attempt ${attemptNumber}/${maxAttempts}: generating Blender Python.`);
+
+    try {
+      code = await generateCode({
+        description: prompt,
+        context: attemptContext,
+        conversationHistory: historyContext,
+        sceneSnapshot: sceneSnapshotContext,
+        ragContext,
+        model,
+        apiKey,
+      });
+    } catch (error) {
+      const attemptEntry = buildAttemptTraceEntry({
+        attemptNumber,
+        maxAttempts,
+        stage: 'generation',
+        error,
+      });
+      attempts.push(attemptEntry);
+      failureMessage = attemptEntry.message;
+      sendLog(`In-app prompt attempt ${attemptNumber}/${maxAttempts} generation failed: ${attemptEntry.message}`);
+      progress('error', `Attempt ${attemptNumber}/${maxAttempts}: generation failed.`);
+      if (!agentMode || attemptNumber === maxAttempts) {
+        if (!agentMode) {
+          throw error;
+        }
+        agentOutcome = attemptEntry.status;
+        break;
+      }
+      continue;
+    }
+
+    sendLog(`In-app prompt attempt ${attemptNumber}/${maxAttempts}: executing in Blender.`);
+    progress('status', `Attempt ${attemptNumber}/${maxAttempts}: executing in Blender.`);
+
+    try {
+      execution = await executeCreateInBlender({
+        code,
+        watchFilePath: blenderClaudeWatchFile,
+      });
+      const attemptEntry = buildAttemptTraceEntry({
+        attemptNumber,
+        maxAttempts,
+        stage: 'execution',
+        execution,
+      });
+      attempts.push(attemptEntry);
+
+      const blenderStatus = execution.pending ? 'pending' : String(execution.result?.status || '');
+      sendLog(`In-app prompt attempt ${attemptNumber}/${maxAttempts} completed with ${attemptEntry.status}.`);
+      progress(
+        execution.pending || blenderStatus === 'success' ? 'success' : 'warning',
+        `Attempt ${attemptNumber}/${maxAttempts}: Blender returned ${attemptEntry.status}.`
+      );
+
+      if (execution.pending || blenderStatus === 'success') {
+        agentOutcome = execution.pending ? 'pending' : 'success';
+        break;
+      }
+
+      failureMessage = attemptEntry.message || attemptEntry.blenderSummary;
+      agentOutcome = blenderStatus || 'execution_error';
+
+      if (useSceneSnapshot) {
+        if (execution.result) {
+          sceneSnapshotContext = formatSceneSnapshotForPrompt({ result: execution.result });
+        } else {
+          try {
+            sceneSnapshot = await fetchLiveSceneSnapshot();
+            sceneSnapshotContext = formatSceneSnapshotForPrompt(sceneSnapshot);
+            progress('status', 'Updated scene snapshot after Blender feedback.');
+          } catch (error) {
+            sceneWarning = `Live Blender scene snapshot failed: ${String(error.message || error)}`;
+            sendLog(`In-app prompt scene snapshot skipped: ${sceneWarning}`);
+            progress('warning', 'Could not update scene snapshot after Blender feedback.');
+          }
+        }
+      }
+    } catch (error) {
+      const attemptEntry = buildAttemptTraceEntry({
+        attemptNumber,
+        maxAttempts,
+        stage: 'execution',
+        error,
+      });
+      attempts.push(attemptEntry);
+      failureMessage = attemptEntry.message;
+      sendLog(`In-app prompt attempt ${attemptNumber}/${maxAttempts} execution failed: ${attemptEntry.message}`);
+      progress('error', `Attempt ${attemptNumber}/${maxAttempts}: execution failed.`);
+      if (!agentMode || attemptNumber === maxAttempts) {
+        if (!agentMode) {
+          throw error;
+        }
+        agentOutcome = attemptEntry.status;
+        break;
+      }
+      continue;
+    }
+  }
+
+  const finalExecution = execution;
+  const finalBlenderResult = finalExecution?.result || null;
+  const finalBlenderResultText = finalExecution?.resultText || (failureMessage ? `${failureMessage}\n` : '');
+  const finalRequestId = finalExecution?.requestId || '';
+  const finalWatchFilePath = finalExecution?.watchFilePath || blenderClaudeWatchFile;
+
+  if (agentMode && finalExecution && !finalExecution.pending && finalExecution.result?.status !== 'success' && attempts.length >= maxAttempts) {
+    agentOutcome = 'exhausted';
+  }
+
+  if (agentMode && !finalExecution && !failureMessage) {
+    failureMessage = 'Agent loop finished without producing a Blender execution result.';
+  }
+
+  sendLog(
+    `In-app prompt finished (provider=${provider}, request_id=${finalRequestId || 'n/a'}, blender_result=${finalExecution?.pending ? 'pending' : (finalBlenderResult?.status || agentOutcome)}).`
+  );
+  progress('done', `Direct Blender prompt finished with ${finalExecution?.pending ? 'pending result' : (finalBlenderResult?.status || agentOutcome)}.`);
+
+  return {
+    provider,
+    prompt,
+    model,
+    code,
+    contextUsed: userContext,
+    ragResult,
+    ragWarning,
+    historyCount: conversationHistory.length,
+    sceneObjectCount: Array.isArray(sceneSnapshot?.result?.scene_objects) ? sceneSnapshot.result.scene_objects.length : 0,
+    sceneSnapshotUsed: Boolean(sceneSnapshotContext),
+    sceneWarning,
+    agentMode,
+    maxAttempts,
+    agentOutcome,
+    attempts,
+    failureMessage,
+    requestId: finalRequestId,
+    watchFilePath: finalWatchFilePath,
+    pending: Boolean(finalExecution?.pending),
+    blenderResult: finalBlenderResult || (failureMessage
+      ? { status: 'error', error: failureMessage, message: failureMessage }
+      : null),
+    blenderResultText: finalBlenderResultText,
+  };
+}
+
+function buildCodexAgentPrompt({
+  prompt,
+  userContext,
+  historyContext,
+}) {
+  return [
+    'You are running from Blender MCP Launcher as a non-interactive Codex CLI agent.',
+    'Use the local repository and configured MCP tools when they are relevant. If the user asks to create or modify Blender content, prefer the configured Blender MCP tools instead of only describing the work.',
+    'Keep the final response concise and include the important files, commands, or Blender result details.',
+    historyContext ? `Conversation history:\n${historyContext}` : '',
+    userContext ? `Extra context:\n${userContext}` : '',
+    `User request:\n${prompt}`,
+  ].filter(Boolean).join('\n\n');
+}
+
+async function runCodexAgentPrompt(options = {}) {
+  const progressRequestId = String(options.requestId || '').trim();
+  const progress = (type, message, extra) => sendAgentRunProgress(progressRequestId, type, message, extra);
+  const prompt = String(options.prompt || '').trim();
+  const userContext = String(options.context || '').trim();
+  const useHistory = options.useHistory !== false;
+  const conversationHistory = useHistory ? normalizePromptHistory(options.history) : [];
+  const historyContext = formatConversationHistoryForPrompt(conversationHistory);
+  const model = String(options.model || '').trim();
+  const sandbox = normalizeCodexSandbox(options.sandbox);
+  const approval = normalizeCodexApproval(options.approval);
+
+  if (!prompt) {
+    throw new Error('Prompt text is required.');
+  }
+
+  const codexProbe = await probeCodexInstallation();
+  if (!codexProbe.installed) {
+    throw new Error(`Codex CLI is not installed or not available to the launcher. ${codexProbe.error || ''}`.trim());
+  }
+
+  const codexEnv = await envWithToolPath('codex', ['node']);
+  const outputPath = path.join(tmpRoot, `blender_mcp_codex_${Date.now()}.txt`);
+  const args = [
+    '--ask-for-approval',
+    approval,
+    'exec',
+    '--json',
+    '--color',
+    'never',
+    '-C',
+    repoRoot,
+    '-s',
+    sandbox,
+    '-o',
+    outputPath,
+  ];
+
+  if (model) {
+    args.push('-m', model);
+  }
+
+  args.push('-');
+
+  sendLog(`Codex agent run started (model=${model || 'config default'}, sandbox=${sandbox}, approval=${approval}).`);
+  progress('status', 'Starting Codex CLI run.');
+
+  let codexLineBuffer = '';
+  const commandResult = await runCommandWithInput(
+    codexProbe.codexPath,
+    args,
+    buildCodexAgentPrompt({ prompt, userContext, historyContext }),
+    {
+      cwd: repoRoot,
+      env: codexEnv,
+      onStdout: (chunk) => {
+        codexLineBuffer = parseJsonLinesFromChunk(codexLineBuffer, chunk, (event, rawLine) => {
+          const message = event
+            ? summarizeAgentJsonEvent('Codex', event)
+            : (rawLine ? `Codex: ${rawLine.slice(0, 240)}` : '');
+          if (message) {
+            progress('event', message, { source: 'codex' });
+          }
+        });
+      },
+      onStderr: (chunk) => {
+        const message = chunk.trim();
+        if (message) {
+          progress('stderr', `Codex: ${message.slice(0, 240)}`, { source: 'codex' });
+        }
+      },
+    }
+  );
+
+  let finalMessage = '';
+  try {
+    finalMessage = (await fs.readFile(outputPath, 'utf8')).trim();
+  } catch {
+    finalMessage = '';
+  }
+
+  sendLog(`Codex agent run finished (output=${outputPath}).`);
+  progress('done', 'Codex CLI run finished.');
+
+  return {
+    provider: 'codex',
+    prompt,
+    model: model || codexProbe.codexVersion || 'config default',
+    sandbox,
+    approval,
+    historyCount: conversationHistory.length,
+    outputPath,
+    finalMessage,
+    stdout: commandResult.stdout || '',
+    stderr: commandResult.stderr || '',
+    code: '',
+    blenderResultText: finalMessage || commandResult.stdout || commandResult.stderr || '',
+    attempts: [],
+  };
+}
+
+function buildClaudeAgentPrompt({
+  prompt,
+  userContext,
+  historyContext,
+}) {
+  return [
+    'You are running from Blender MCP Launcher as a non-interactive Claude Code CLI agent.',
+    'Use the local repository and configured MCP tools when they are relevant. If the user asks to create or modify Blender content, prefer the configured Blender MCP tools instead of only describing the work.',
+    'Keep the final response concise and include the important files, commands, or Blender result details.',
+    historyContext ? `Conversation history:\n${historyContext}` : '',
+    userContext ? `Extra context:\n${userContext}` : '',
+    `User request:\n${prompt}`,
+  ].filter(Boolean).join('\n\n');
+}
+
+function summarizeAgentJsonEvent(source, event) {
+  if (!event || typeof event !== 'object') {
+    return '';
+  }
+
+  const type = String(event.type || event.event || event.kind || event.msg?.type || '').trim();
+  const toolName = event.name
+    || event.tool
+    || event.tool_name
+    || event.toolCall?.name
+    || event.tool_call?.name
+    || event.item?.name
+    || event.message?.name
+    || '';
+  const command = event.command || event.cmd || event.call?.command || event.item?.command || '';
+  const text = event.message
+    || event.text
+    || event.delta
+    || event.result
+    || event.error
+    || event.item?.text
+    || '';
+
+  if (/tool|mcp/i.test(type) && toolName) {
+    return `${source}: using ${toolName}`;
+  }
+
+  if (/exec|command|bash|shell/i.test(type) && command) {
+    return `${source}: running ${command}`;
+  }
+
+  if (/error|failed/i.test(type) && text) {
+    return `${source}: ${String(text).slice(0, 240)}`;
+  }
+
+  if (type === 'result' && text) {
+    return `${source}: final response ready`;
+  }
+
+  if (/assistant|message|output/i.test(type) && typeof text === 'string' && text.trim()) {
+    return `${source}: ${text.trim().slice(0, 240)}`;
+  }
+
+  if (type && !/delta|chunk|token/i.test(type)) {
+    return `${source}: ${type}`;
+  }
+
+  return '';
+}
+
+function extractClaudeTextFromEvent(event) {
+  if (!event || typeof event !== 'object') {
+    return '';
+  }
+
+  if (event.type === 'result' && typeof event.result === 'string') {
+    return event.result.trim();
+  }
+
+  const content = event.message?.content;
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (typeof item?.text === 'string') return item.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+
+  if (typeof event.message === 'string') {
+    return event.message.trim();
+  }
+
+  return '';
+}
+
+function parseJsonLinesFromChunk(buffer, chunk, onJsonLine) {
+  const combined = `${buffer}${chunk}`;
+  const lines = combined.split(/\r?\n/);
+  const nextBuffer = lines.pop() || '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      onJsonLine(JSON.parse(trimmed), trimmed);
+    } catch {
+      onJsonLine(null, trimmed);
+    }
+  }
+
+  return nextBuffer;
+}
+
+async function probeClaudeCodeInstallation() {
+  try {
+    const claudePath = await resolveToolPath('claude');
+    const claudeEnv = await envWithToolPath('claude', ['node']);
+    const result = await runCommand(claudePath, ['--version'], { env: claudeEnv });
+    const version = (result.stdout || result.stderr || '').trim().split('\n').filter(Boolean).slice(-1)[0] || null;
+    return {
+      installed: true,
+      claudePath,
+      claudeVersion: version,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      installed: false,
+      claudePath: null,
+      claudeVersion: null,
+      error: String(error.message || error),
+    };
+  }
+}
+
+async function runClaudeAgentPrompt(options = {}) {
+  const progressRequestId = String(options.requestId || '').trim();
+  const progress = (type, message, extra) => sendAgentRunProgress(progressRequestId, type, message, extra);
+  const prompt = String(options.prompt || '').trim();
+  const userContext = String(options.context || '').trim();
+  const useHistory = options.useHistory !== false;
+  const conversationHistory = useHistory ? normalizePromptHistory(options.history) : [];
+  const historyContext = formatConversationHistoryForPrompt(conversationHistory);
+  const model = String(options.model || '').trim();
+  const permissionMode = normalizeClaudePermissionMode(options.permissionMode);
+  const allowBlenderTools = options.allowBlenderTools !== false;
+
+  if (!prompt) {
+    throw new Error('Prompt text is required.');
+  }
+
+  const claudeProbe = await probeClaudeCodeInstallation();
+  if (!claudeProbe.installed) {
+    throw new Error(`Claude Code CLI is not installed or not available to the launcher. ${claudeProbe.error || ''}`.trim());
+  }
+
+  const claudeEnv = await envWithToolPath('claude', ['node']);
+  const args = [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--permission-mode',
+    permissionMode,
+    '--no-session-persistence',
+  ];
+
+  if (model) {
+    args.push('--model', model);
+  }
+
+  if (allowBlenderTools) {
+    args.push('--allowedTools', blenderClaudeAllowedTools().join(','));
+  }
+
+  sendLog(`Claude Code agent run started (model=${model || 'config default'}, permission=${permissionMode}, blender_tools=${allowBlenderTools ? 'allowed' : 'default'}).`);
+  progress('status', 'Starting Claude Code CLI run.');
+
+  let claudeLineBuffer = '';
+  let finalMessage = '';
+  const commandResult = await runCommandWithInput(
+    claudeProbe.claudePath,
+    args,
+    buildClaudeAgentPrompt({ prompt, userContext, historyContext }),
+    {
+      cwd: repoRoot,
+      env: claudeEnv,
+      onStdout: (chunk) => {
+        claudeLineBuffer = parseJsonLinesFromChunk(claudeLineBuffer, chunk, (event, rawLine) => {
+          if (event) {
+            const eventText = extractClaudeTextFromEvent(event);
+            if (event.type === 'result' && eventText) {
+              finalMessage = eventText;
+            }
+            const message = summarizeAgentJsonEvent('Claude', event);
+            if (message) {
+              progress('event', message, { source: 'claude' });
+            }
+          } else if (rawLine) {
+            progress('stdout', `Claude: ${rawLine.slice(0, 240)}`, { source: 'claude' });
+          }
+        });
+      },
+      onStderr: (chunk) => {
+        const message = chunk.trim();
+        if (message) {
+          progress('stderr', `Claude: ${message.slice(0, 240)}`, { source: 'claude' });
+        }
+      },
+    }
+  );
+
+  if (!finalMessage) {
+    const lines = (commandResult.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        const eventText = extractClaudeTextFromEvent(event);
+        if (event.type === 'result' && eventText) {
+          finalMessage = eventText;
+        }
+      } catch {
+        // Ignore non-JSON output.
+      }
+    }
+  }
+
+  if (!finalMessage) {
+    finalMessage = (commandResult.stdout || '').trim();
+  }
+
+  sendLog('Claude Code agent run finished.');
+  progress('done', 'Claude Code CLI run finished.');
+
+  return {
+    provider: 'claude',
+    prompt,
+    model: model || claudeProbe.claudeVersion || 'config default',
+    permissionMode,
+    allowBlenderTools,
+    historyCount: conversationHistory.length,
+    finalMessage,
+    stdout: commandResult.stdout || '',
+    stderr: commandResult.stderr || '',
+    code: '',
+    blenderResultText: finalMessage || commandResult.stderr || '',
+    attempts: [],
+  };
+}
+
 async function probeNodeInstallation() {
   try {
     const nodePath = await resolveToolPath('node');
@@ -720,7 +1630,8 @@ async function detectBlenderInstallation() {
 async function probeCodexInstallation() {
   try {
     const codexPath = await resolveToolPath('codex');
-    const result = await runCommand(codexPath, ['--version']);
+    const codexEnv = await envWithToolPath('codex', ['node']);
+    const result = await runCommand(codexPath, ['--version'], { env: codexEnv });
     const version = (result.stdout || result.stderr || '').trim().split('\n').filter(Boolean).slice(-1)[0] || null;
     return {
       installed: true,
@@ -942,6 +1853,62 @@ function runCommand(command, args, options = {}) {
         reject(new Error((stderr || stdout || `Command failed with code ${code}`).trim()));
       }
     });
+  });
+}
+
+function runCommandWithInput(command, args, input, options = {}) {
+  return new Promise((resolve, reject) => {
+    const {
+      onStdout,
+      onStderr,
+      ...spawnOptions
+    } = options;
+    const shellOverride = Object.prototype.hasOwnProperty.call(options, 'shell')
+      ? options.shell
+      : (isWindows && /\.(cmd|bat)$/i.test(command));
+
+    const child = spawn(command, args, {
+      ...spawnOptions,
+      env: { ...process.env, ...(options.env || {}) },
+      shell: shellOverride,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data) => {
+      const text = data.toString();
+      stdout += text;
+      if (typeof onStdout === 'function') {
+        onStdout(text);
+      }
+    });
+
+    child.stderr.on('data', (data) => {
+      const text = data.toString();
+      stderr += text;
+      if (typeof onStderr === 'function') {
+        onStderr(text);
+      }
+    });
+
+    child.on('error', reject);
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr, code });
+      } else {
+        const detail = (stderr || stdout || `Command failed with code ${code}`).trim();
+        const error = new Error(detail);
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.code = code;
+        reject(error);
+      }
+    });
+
+    child.stdin.end(input);
   });
 }
 
@@ -1292,6 +2259,9 @@ ipcMain.handle('tmp:list-files', async () => listTmpFiles());
 ipcMain.handle('tmp:read-file', async (_event, filePath) => readTmpFile(filePath));
 ipcMain.handle('tmp:reset-result', async () => resetBlenderResultFile());
 ipcMain.handle('tmp:fetch-snapshot', async () => fetchLiveSceneSnapshot());
+ipcMain.handle('prompt:run', async (_event, options = {}) => runInAppPrompt(options));
+ipcMain.handle('agent:codex-run', async (_event, options = {}) => runCodexAgentPrompt(options));
+ipcMain.handle('agent:claude-run', async (_event, options = {}) => runClaudeAgentPrompt(options));
 ipcMain.handle('rag:status', async () => getRagStatus());
 
 ipcMain.handle('setup:install-deps', async () => {

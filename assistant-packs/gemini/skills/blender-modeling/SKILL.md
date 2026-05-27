@@ -21,9 +21,3 @@ Use this skill when the user asks to create or modify Blender scenes via MCP too
 - Respect lock/preserve semantics if available in the addon.
 - Keep geometry complexity proportional to the request.
 - Use Blender 4/5 compatible node socket names where relevant.
-
-## Output format
-
-- Brief plan (1-3 lines)
-- Executable code
-- Result summary (objects created, warnings, or next fix)

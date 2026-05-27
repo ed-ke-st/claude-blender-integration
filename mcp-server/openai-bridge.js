@@ -4,10 +4,9 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
-import OpenAI from "openai";
+import { DEFAULT_OPENAI_MODEL, generateCode } from "./openai-generation.js";
 
 const DEFAULT_WATCH_FILE = join(tmpdir(), "blender_auto_execute.py");
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
 function printUsage() {
   console.error(`Usage:
@@ -15,7 +14,7 @@ function printUsage() {
 
 Options:
   --context "<text>"       Optional scene context
-  --model "<model>"        OpenAI model (default: ${DEFAULT_MODEL})
+  --model "<model>"        OpenAI model (default: ${DEFAULT_OPENAI_MODEL})
   --watch-file "<path>"    Output file (default: ${DEFAULT_WATCH_FILE})
   --dry-run                Print code but do not write file
 
@@ -34,7 +33,7 @@ function parseArgs(argv) {
 
   let description = "";
   let context = "";
-  let model = DEFAULT_MODEL;
+  let model = DEFAULT_OPENAI_MODEL;
   let watchFile = process.env.BLENDER_WATCH_FILE || DEFAULT_WATCH_FILE;
   let dryRun = false;
 
@@ -66,66 +65,6 @@ function parseArgs(argv) {
   description = positionals.join(" ").trim();
 
   return { command, description, context, model, watchFile, dryRun };
-}
-
-function buildGeneratePrompt(description, context = "") {
-  return `Generate Blender Python code for the following request.
-
-REQUIREMENTS:
-- Use bpy and bmesh libraries where appropriate
-- Code must run in Blender 5.0+
-- Include basic error handling
-- Return ONLY Python code, no markdown fences
-
-REQUEST: ${description}
-${context ? `CONTEXT: ${context}` : ""}
-`;
-}
-
-function stripCodeFences(text) {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/^```(?:python)?\s*([\s\S]*?)\s*```$/i);
-  return fenced ? fenced[1].trim() : trimmed;
-}
-
-async function generateCode({ description, context, model }) {
-  if (!description) {
-    console.error("Missing description.");
-    printUsage();
-    process.exit(1);
-  }
-
-  if (!process.env.OPENAI_API_KEY) {
-    console.error("OPENAI_API_KEY is not set.");
-    process.exit(1);
-  }
-
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const prompt = buildGeneratePrompt(description, context);
-
-  const response = await client.responses.create({
-    model,
-    input: [
-      {
-        role: "system",
-        content:
-          "You write executable Blender Python only. No markdown, no explanation.",
-      },
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-  });
-
-  const text = response.output_text || "";
-  const code = stripCodeFences(text);
-
-  if (!code) {
-    throw new Error("Model returned empty output.");
-  }
-
-  return code;
 }
 
 async function main() {

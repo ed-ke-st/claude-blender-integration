@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_ROOT="$REPO_ROOT/assistant-packs/claude/sub-agents"
-TARGET_ROOT="$REPO_ROOT/.claude/agents"
+TARGET_ROOT="$HOME/.claude/agents"
 
 if [ ! -d "$SOURCE_ROOT" ]; then
   echo "Error: source sub-agents folder not found:"

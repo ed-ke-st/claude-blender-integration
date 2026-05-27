@@ -1,7 +1,7 @@
 {
   "name": "blender-mcp-server",
   "version": "1.0.0",
-  "description": "MCP server for Claude-powered Blender modeling",
+  "description": "MCP server for Blender modeling assistants",
   "type": "module",
   "main": "index.js",
   "scripts": {

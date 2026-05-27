@@ -1,5 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Database,
+  FolderOpen,
+  MessageSquareText,
+  PlugZap,
+  Server,
+  Wrench,
+  ChevronRight,
+  ChevronLeft,
+  X,
+} from 'lucide-react';
 import appIcon from './assets/app-icon.svg';
+import { ChatWorkspace } from './components/ChatWorkspace.jsx';
+import { WorkspaceHeader } from './components/WorkspaceHeader.jsx';
+import { usePromptWorkspace } from './hooks/usePromptWorkspace';
 
 const ONBOARDING_COMPLETE_KEY = 'blenderMcpLauncher.onboardingComplete.v1';
 
@@ -190,6 +204,10 @@ export function App() {
   const [tmpContent, setTmpContent] = useState('');
   const [tmpFiles, setTmpFiles] = useState([]);
   const [selectedTmpFile, setSelectedTmpFile] = useState('');
+  const [activeWorkspace, setActiveWorkspace] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(false);
   const [setupData, setSetupData] = useState(null);
 
   const [transport, setTransport] = useState('stdio');
@@ -209,6 +227,7 @@ export function App() {
   const nodeInstallStateRef = useRef(null);
 
   const api = useMemo(() => window.launcherApi, []);
+  const promptWorkspace = usePromptWorkspace();
 
   const onboardingSteps = [
     {
@@ -317,6 +336,27 @@ export function App() {
       unsubNodeInstall();
     };
   }, [api]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 980px)');
+    const applyViewportMode = (matches) => {
+      setIsNarrowViewport(matches);
+      if (matches) {
+        setSidebarDrawerOpen(false);
+      }
+    };
+
+    applyViewportMode(mediaQuery.matches);
+    const handleChange = (event) => applyViewportMode(event.matches);
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
 
   const runWithBusy = async (key, fn) => {
     setBusyFlag(key, true);
@@ -627,6 +667,12 @@ export function App() {
   const claudeDesktopReady = Boolean(setupChecks?.claudeDesktopInstalled);
   const codexReady = Boolean(setupChecks?.codexCliInstalled);
   const chatgptDesktopReady = Boolean(setupChecks?.chatgptDesktopInstalled);
+  const promptingReady = Boolean(setupChecks?.mcpDependenciesInstalled && setupChecks?.addonInstalled);
+  const promptingRequiredHint = [
+    !setupChecks?.mcpDependenciesInstalled ? 'Install MCP dependencies before using in-app prompting.' : null,
+    !setupChecks?.addonInstalled ? 'Install and enable the Blender addon before sending prompts to Blender.' : null,
+    !setupChecks?.blenderInstalled ? 'Blender is not detected. Launch or install Blender first.' : null,
+  ].filter(Boolean).join('\n');
   const aiHostsRequiredHint = [
     !claudeDesktopReady ? 'Claude Desktop not detected. Use "Get Claude Desktop".' : null,
     !codexReady ? 'Codex CLI not detected. Use "Install Codex CLI" (or open install docs).' : null,
@@ -636,6 +682,105 @@ export function App() {
   const guideRunAllPercent = guideRunAllState && guideRunAllState.total > 0
     ? Math.round((guideRunAllState.completed / guideRunAllState.total) * 100)
     : 0;
+  const currentWorkspace = activeWorkspace || (promptingReady ? 'chat' : 'setup');
+  const sidebarExpanded = isNarrowViewport ? sidebarDrawerOpen : !sidebarCollapsed;
+  const workspaceMeta = {
+    chat: {
+      title: 'Chat Workspace',
+      description: 'Prompt Blender directly from the launcher, review attempt traces, and manage session conversation in one place.',
+    },
+    setup: {
+      title: 'Setup',
+      description: 'Install prerequisites, verify Blender/addon readiness, and keep the local environment healthy.',
+    },
+    connections: {
+      title: 'Connections',
+      description: 'Configure Claude Desktop, Codex, and local agent templates from one screen.',
+    },
+    server: {
+      title: 'Server',
+      description: 'Start, stop, and inspect the MCP server runtime and logs.',
+    },
+    rag: {
+      title: 'RAG',
+      description: 'Build and query the local repository index used by retrieval-grounded prompting.',
+    },
+    files: {
+      title: 'Temp Files',
+      description: 'Inspect Blender watch files, result files, and live scene snapshots.',
+    },
+  }[currentWorkspace] || {
+    title: 'Blender MCP Launcher',
+    description: 'Desktop control panel for setup, prompting, and maintenance.',
+  };
+  const workspaceItems = [
+    {
+      id: 'chat',
+      icon: MessageSquareText,
+      label: 'Chat',
+      helper: promptingReady ? 'Ready' : 'Needs setup',
+      target: promptingReady ? 'chat' : 'setup',
+    },
+    {
+      id: 'setup',
+      icon: Wrench,
+      label: 'Setup',
+      helper: setupChecks?.addonInstalled ? 'Maintained' : 'Action needed',
+      target: 'setup',
+    },
+    {
+      id: 'connections',
+      icon: PlugZap,
+      label: 'Connections',
+      helper: claudeDesktopReady || codexReady ? 'Configured' : 'Optional',
+      target: 'connections',
+    },
+    {
+      id: 'server',
+      icon: Server,
+      label: 'Server',
+      helper: setupChecks?.serverRunning ? 'Running' : 'Stopped',
+      target: 'server',
+    },
+    {
+      id: 'rag',
+      icon: Database,
+      label: 'RAG',
+      helper: setupChecks?.ragIndexPresent ? 'Indexed' : 'Not indexed',
+      target: 'rag',
+    },
+    {
+      id: 'files',
+      icon: FolderOpen,
+      label: 'Files',
+      helper: tmpFiles.length ? `${tmpFiles.length} found` : 'No files',
+      target: 'files',
+    },
+  ];
+
+  const handleStartServerFromHeader = (busyKey = 'headerStartServer') => runWithBusy(busyKey, async () => {
+    try {
+      const result = await api.startServer({
+        transport,
+        host: host.trim(),
+        port: port.trim(),
+        authToken,
+      });
+      if (result.alreadyRunning) {
+        setServerStatus('Server already running.');
+      } else {
+        setServerStatus(`Server started (${result.transport}).`);
+      }
+
+      const status = await api.serverStatus();
+      if (!status.running) {
+        setServerStatus('Server failed to start.');
+      }
+      await refreshSetupStatus();
+    } catch (error) {
+      setServerStatus(`Start failed:\n${String(error.message || error)}`);
+    }
+  });
 
   const addonActivationSteps = (
     <div className="addon-steps">
@@ -1148,582 +1293,692 @@ export function App() {
     <>
       {installBanner}
       {nodeInstallBanner}
-      <main>
-      <header className="app-header">
-        <div className="title-with-icon">
-          <img src={appIcon} alt="" className="app-title-icon" />
-          <div>
-            <h1>Blender MCP Launcher</h1>
-            <p>Desktop control panel for setup, configuration, and MCP server runtime.</p>
-          </div>
-        </div>
-        <button className="ghost" onClick={() => setShowOnboarding(true)}>Show onboarding</button>
-      </header>
-
-      <section className="card">
-        <div className="section-title">
-          <span className="section-number">1</span>
-          <h2>Setup Checks</h2>
-        </div>
-        <div className="card-content">
-          <div className="actions">
+      <main className="app-shell">
+        <div className={`app-shell-body${sidebarCollapsed && !isNarrowViewport ? ' sidebar-collapsed' : ''}`}>
+          {isNarrowViewport && sidebarDrawerOpen && (
             <button
-              disabled={Boolean(busy.checkSetup)}
-              onClick={() => runWithBusy('checkSetup', async () => {
-                try {
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setSetupStatus(String(error.message || error));
-                }
-              })}
-            >
-              Refresh Status
-            </button>
-            <button
-              disabled={!blenderReady || Boolean(busy.launchBlender)}
-              onClick={() => runWithBusy('launchBlender', async () => {
-                try {
-                  const result = await api.launchBlender();
-                  setSetupStatus(`Blender launch requested:\n${result.blenderAppPath}`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setSetupStatus(`Blender launch failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Launch Blender
-            </button>
-            <button
-              disabled={Boolean(busy.downloadBlender)}
-              onClick={() => runWithBusy('downloadBlender', async () => {
-                try {
-                  const result = await api.openBlenderDownload();
-                  setSetupStatus(`Opened Blender download page:\n${result.url}`);
-                } catch (error) {
-                  setSetupStatus(`Failed to open Blender download page:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Download Blender
-            </button>
-            <button
-              disabled={Boolean(busy.installNode)}
-              onClick={() => runWithBusy('installNode', async () => {
-                try {
-                  const result = await api.installNode();
-                  if (result?.alreadyRunning) {
-                    setSetupStatus('Node.js install is already running in the background.');
+              className="sidebar-backdrop"
+              aria-label="Close sidebar"
+              onClick={() => setSidebarDrawerOpen(false)}
+            />
+          )}
+          <aside className={`sidebar card${sidebarExpanded ? ' expanded' : ' collapsed'}${isNarrowViewport && sidebarDrawerOpen ? ' mobile-open' : ''}`}>
+            <div className="sidebar-brand">
+              <div className="title-with-icon">
+                <img src={appIcon} alt="" className="app-title-icon" />
+                <div className="sidebar-brand-copy">
+                  <h1>Blender MCP Launcher</h1>
+                  <p>{promptingReady ? 'Chat-first workspace' : 'Setup-first workspace'}</p>
+                </div>
+              </div>
+              <button
+                className="ghost sidebar-toggle"
+                onClick={() => {
+                  if (isNarrowViewport) {
+                    setSidebarDrawerOpen(false);
                   } else {
-                    setSetupStatus('Node.js install started in background. You can continue using the launcher while it runs.');
+                    setSidebarCollapsed((current) => !current);
                   }
-                } catch (error) {
-                  setSetupStatus(`Node install failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Install Node.js
-            </button>
-            <button
-              disabled={!nodeReady || Boolean(busy.installDeps) || Boolean(installState?.installing)}
-              onClick={() => runWithBusy('installDeps', async () => {
-                try {
-                  const output = await api.installDependencies();
-                  setSetupStatus(`Dependencies installed.\n\n${output}`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setSetupStatus(`Dependency install failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              {installState?.installing ? 'Installing…' : 'Install MCP Dependencies'}
-            </button>
-            <button
-              disabled={Boolean(busy.installAddon)}
-              onClick={() => runWithBusy('installAddon', async () => {
-                try {
-                  const file = await api.installAddon();
-                  setSetupStatus(`Addon installed to:\n${file}`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setSetupStatus(`Addon install failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Install Blender Addon
-            </button>
-          </div>
-          {!blenderReady && <pre className="status-hint">{blenderRequiredHint}</pre>}
-          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
-          {addonActivationSteps}
-          <pre className="status-box">{setupStatus}</pre>
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="section-title">
-          <span className="section-number">2</span>
-          <h2>Configure Hosts</h2>
-        </div>
-        <div className="card-content">
-          <div className="checklist">
-            <div className="check-item">
-              <span>Claude Desktop app installed</span>
-              {statusPill(claudeDesktopReady)}
+                }}
+              >
+                {isNarrowViewport ? <X size={24}/> : (sidebarCollapsed ? <ChevronRight size={24}/> : <ChevronLeft size={24}/>)}
+              </button>
             </div>
-            <div className="check-item">
-              <span>Codex CLI installed</span>
-              {statusPill(codexReady)}
+
+            <div className="sidebar-status">
+              <div className="sidebar-status-row">
+                <span>Prompting</span>
+                {statusPill(promptingReady)}
+              </div>
+              <div className="sidebar-status-row">
+                <span>Blender</span>
+                {statusPill(blenderReady)}
+              </div>
+              <div className="sidebar-status-row">
+                <span>Server</span>
+                {statusPill(setupChecks?.serverRunning, 'Running', 'Stopped')}
+              </div>
+              <div className="sidebar-status-row">
+                <span>RAG</span>
+                {statusPill(setupChecks?.ragIndexPresent, 'Indexed', 'Not indexed')}
+              </div>
             </div>
-            <div className="check-item">
-              <span>ChatGPT desktop app installed</span>
-              {statusPill(chatgptDesktopReady)}
+
+            <nav className="sidebar-nav" aria-label="Launcher navigation">
+              {workspaceItems.map((item) => {
+                const ItemIcon = item.icon;
+                return (
+                <button
+                  key={item.id}
+                  className={currentWorkspace === item.id ? 'sidebar-nav-button active' : 'sidebar-nav-button'}
+                  aria-label={item.label}
+                  title={sidebarCollapsed && !isNarrowViewport ? item.label : undefined}
+                  onClick={() => {
+                    setActiveWorkspace(item.target);
+                    if (isNarrowViewport) {
+                      setSidebarDrawerOpen(false);
+                    }
+                  }}
+                >
+                  <ItemIcon className="sidebar-nav-icon" aria-hidden="true" />
+                  <div className="sidebar-nav-copy">
+                    <span className="sidebar-nav-label">{item.label}</span>
+                    <small>{item.helper}</small>
+                  </div>
+                </button>
+                );
+              })}
+            </nav>
+
+            <div className="sidebar-footer">
+              <button
+                className="ghost"
+                onClick={() => {
+                  setShowOnboarding(true);
+                  setSidebarDrawerOpen(false);
+                }}
+              >
+                {sidebarCollapsed && !isNarrowViewport ? 'Guide' : 'Show onboarding'}
+              </button>
             </div>
-          </div>
-          <div className="actions">
-            <button
-              disabled={Boolean(busy.getClaudeDesktop)}
-              onClick={() => runWithBusy('getClaudeDesktop', async () => {
-                try {
-                  const result = await api.openClaudeDownload();
-                  setConfigStatus(`Opened Claude Desktop download page:\n${result.url}`);
-                } catch (error) {
-                  setConfigStatus(`Failed to open Claude Desktop download page:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Get Claude Desktop
-            </button>
-            <button
-              disabled={!nodeReady || Boolean(busy.installCodexCli)}
-              onClick={() => runWithBusy('installCodexCli', async () => {
-                try {
-                  const result = await api.installCodexCli();
-                  setConfigStatus(formatCodexInstallResult(result));
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setConfigStatus(`Codex install failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Install Codex CLI
-            </button>
-            <button
-              disabled={Boolean(busy.openCodexDocs)}
-              onClick={() => runWithBusy('openCodexDocs', async () => {
-                try {
-                  const result = await api.openCodexInstallDocs();
-                  setConfigStatus(`Opened Codex install docs:\n${result.url}`);
-                } catch (error) {
-                  setConfigStatus(`Failed to open Codex install docs:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Open Codex Install Docs
-            </button>
-            <button
-              disabled={Boolean(busy.getChatgptDesktop)}
-              onClick={() => runWithBusy('getChatgptDesktop', async () => {
-                try {
-                  const result = await api.openChatgptDownload();
-                  setConfigStatus(`Opened ChatGPT desktop download page:\n${result.url}`);
-                } catch (error) {
-                  setConfigStatus(`Failed to open ChatGPT download page:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Get ChatGPT Desktop
-            </button>
-            <button
-              disabled={!nodeReady || !claudeDesktopReady || Boolean(busy.configureClaude)}
-              onClick={() => runWithBusy('configureClaude', async () => {
-                try {
-                  const result = await api.configureClaude();
-                  const backupNote = result.backupPath
-                    ? `\nBackup created:\n${result.backupPath}`
-                    : '\nNo previous file existed, so no backup was created.';
-                  setConfigStatus(`Claude Desktop config updated:\n${result.path}${backupNote}\n\nRestart Claude Desktop to reload MCP servers.`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setConfigStatus(`Failed to configure Claude:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Configure Claude Desktop
-            </button>
-            <button
-              disabled={Boolean(busy.restoreClaude)}
-              onClick={() => runWithBusy('restoreClaude', async () => {
-                try {
-                  const result = await api.restoreClaudeConfig();
-                  setConfigStatus(`Claude config restored:\n${result.path}\n\nRestored from:\n${result.restoredFrom}`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setConfigStatus(`Failed to restore Claude config:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Restore Claude Backup
-            </button>
-            <button
-              disabled={!nodeReady || !codexReady || Boolean(busy.configureCodex)}
-              onClick={() => runWithBusy('configureCodex', async () => {
-                try {
-                  const result = await api.configureCodex();
-                  const backupNote = result.backupPath
-                    ? `\nBackup created:\n${result.backupPath}`
-                    : '\nNo previous file existed, so no backup was created.';
-                  setConfigStatus(`Codex config updated:\n${result.path}${backupNote}`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setConfigStatus(`Failed to configure Codex:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Configure Codex
-            </button>
-            <button
-              disabled={Boolean(busy.restoreCodex)}
-              onClick={() => runWithBusy('restoreCodex', async () => {
-                try {
-                  const result = await api.restoreCodexConfig();
-                  setConfigStatus(`Codex config restored:\n${result.path}\n\nRestored from:\n${result.restoredFrom}`);
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setConfigStatus(`Failed to restore Codex config:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Restore Codex Backup
-            </button>
-            <button
-              disabled={Boolean(busy.installAssistantPacks)}
-              onClick={() => runWithBusy('installAssistantPacks', async () => {
-                try {
-                  const result = await api.installAssistantPacks();
-                  setConfigStatus(
-                    [
-                      'Assistant templates installed.',
-                      '',
-                      `Codex skills: ${result.codex.installed}`,
-                      `Target: ${result.codex.targetRoot}`,
-                      '',
-                      `Claude skills: ${result.claudeSkills.installed}`,
-                      `Target: ${result.claudeSkills.targetRoot}`,
-                      '',
-                      `Claude app local-agent copies: ${result.claudeLocalAgent.totalCopies}`,
-                      `Sessions detected: ${result.claudeLocalAgent.sessionsFound}`,
-                      `Manifests updated: ${result.claudeLocalAgent.manifestsUpdated}`,
-                      '',
-                      `Claude sub-agents: ${result.claudeSubAgents.installed}`,
-                      `Target: ${result.claudeSubAgents.targetRoot}`,
-                    ].join('\n')
-                  );
-                } catch (error) {
-                  setConfigStatus(`Failed to install assistant templates:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Install Agents/Skills
-            </button>
-            <button
-              disabled={Boolean(busy.exportClaudeSkillsZip)}
-              onClick={() => runWithBusy('exportClaudeSkillsZip', async () => {
-                try {
-                  const result = await api.exportClaudeSkillsZip();
-                  setConfigStatus(
-                    [
-                      'Claude skills ZIP exported.',
-                      '',
-                      `File: ${result.zipPath}`,
-                      `Skills included: ${result.skillsIncluded}`,
-                      `Source: ${result.sourceRoot}`,
-                    ].join('\n')
-                  );
-                } catch (error) {
-                  setConfigStatus(`Failed to export Claude skills ZIP:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Export Claude Skills ZIP
-            </button>
-          </div>
-          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
-          {aiHostsRequiredHint && <pre className="status-hint">{aiHostsRequiredHint}</pre>}
-          <pre className="status-box">{configStatus}</pre>
-        </div>
-      </section>
+          </aside>
 
-      <section className="card">
-        <div className="section-title">
-          <span className="section-number">3</span>
-          <h2>Server Control</h2>
-        </div>
-        <div className="card-content">
-          <div className="server-form">
-            <label>
-              Transport
-              <select value={transport} onChange={(event) => setTransport(event.target.value)}>
-                <option value="stdio">stdio (Claude/Codex)</option>
-                <option value="http">http (ChatGPT connector)</option>
-              </select>
-            </label>
-            <label>
-              Host
-              <input value={host} onChange={(event) => setHost(event.target.value)} />
-            </label>
-            <label>
-              Port
-              <input value={port} onChange={(event) => setPort(event.target.value)} />
-            </label>
-            <label>
-              Auth Token (optional)
-              <input
-                placeholder="MCP_AUTH_TOKEN"
-                value={authToken}
-                onChange={(event) => setAuthToken(event.target.value)}
-              />
-            </label>
-          </div>
-          <div className="actions">
-            <button
-              disabled={!nodeReady || Boolean(busy.startServer)}
-              onClick={() => runWithBusy('startServer', async () => {
+          <section className="workspace-area">
+            <WorkspaceHeader
+              title={workspaceMeta.title}
+              description={workspaceMeta.description}
+              promptingReady={promptingReady}
+              blenderReady={blenderReady}
+              serverRunning={Boolean(setupChecks?.serverRunning)}
+              ragReady={Boolean(setupChecks?.ragIndexPresent)}
+              nodeReady={nodeReady}
+              serverBusy={busy.headerStartServer}
+              refreshBusy={busy.workspaceRefresh}
+              isNarrowViewport={isNarrowViewport}
+              sidebarDrawerOpen={sidebarDrawerOpen}
+              onToggleSidebar={() => setSidebarDrawerOpen((current) => !current)}
+              onStartServer={handleStartServerFromHeader}
+              onRefreshWorkspace={() => runWithBusy('workspaceRefresh', async () => {
                 try {
-                  const result = await api.startServer({
-                    transport,
-                    host: host.trim(),
-                    port: port.trim(),
-                    authToken,
-                  });
-                  if (result.alreadyRunning) {
-                    setServerStatus('Server already running.');
-                  } else {
-                    setServerStatus(`Server started (${result.transport}).`);
-                  }
-
-                  const status = await api.serverStatus();
-                  if (!status.running) {
-                    setServerStatus('Server failed to start.');
-                  }
                   await refreshSetupStatus();
-                } catch (error) {
-                  setServerStatus(`Start failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Start Server
-            </button>
-            <button
-              className={buttonClass(true)}
-              disabled={Boolean(busy.stopServer)}
-              onClick={() => runWithBusy('stopServer', async () => {
-                try {
-                  await api.stopServer();
-                  setServerStatus('Stop signal sent.');
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setServerStatus(`Stop failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Stop Server
-            </button>
-          </div>
-          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
-          <pre className="status-box">{serverStatus}</pre>
-          <pre className="log-box">{serverLogs}</pre>
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="section-title">
-          <span className="section-number">4</span>
-          <h2>RAG Control</h2>
-        </div>
-        <div className="card-content">
-          <div className="server-form">
-            <label>
-              Query text
-              <input
-                value={ragQueryText}
-                onChange={(event) => setRagQueryText(event.target.value)}
-                placeholder="What are the Blender delete safeguards?"
-              />
-            </label>
-            <label>
-              Top K
-              <input
-                value={ragTopK}
-                onChange={(event) => setRagTopK(event.target.value)}
-                placeholder="5"
-              />
-            </label>
-          </div>
-          <div className="actions">
-            <button
-              disabled={Boolean(busy.ragRefreshStatus)}
-              onClick={() => runWithBusy('ragRefreshStatus', async () => {
-                try {
                   await refreshRagStatus();
-                } catch (error) {
-                  setRagStatus(`Failed to read RAG status:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Refresh RAG Status
-            </button>
-            <button
-              disabled={!nodeReady || Boolean(busy.ragIndex)}
-              onClick={() => runWithBusy('ragIndex', async () => {
-                try {
-                  const result = await api.ragIndex();
-                  setRagStatus(formatRagStatus(result.ragStatus));
-                  setRagOutput(
-                    [
-                      'RAG index complete.',
-                      '',
-                      `Store: ${result.ragStatus?.storePath || '(unknown)'}`,
-                      `Files indexed: ${result.indexResult?.files_indexed ?? result.ragStatus?.filesIndexed ?? 0}`,
-                      `Chunks indexed: ${result.indexResult?.chunks_indexed ?? result.ragStatus?.chunksIndexed ?? 0}`,
-                      `Indexed at: ${result.indexResult?.indexed_at || result.ragStatus?.indexedAt || '(unknown)'}`,
-                      `Missing patterns: ${(result.indexResult?.missing_patterns || []).join(', ') || '(none)'}`,
-                    ].join('\n')
-                  );
-                  await refreshSetupStatus();
-                } catch (error) {
-                  setRagOutput(`RAG index failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Build/Refresh RAG Index
-            </button>
-            <button
-              disabled={!nodeReady || Boolean(busy.ragQuery)}
-              onClick={() => runWithBusy('ragQuery', async () => {
-                try {
-                  const topKValue = Number(ragTopK);
-                  const topK = Number.isFinite(topKValue) ? topKValue : 5;
-                  const result = await api.ragQuery({
-                    query: ragQueryText,
-                    topK,
-                  });
-
-                  setRagOutput(JSON.stringify(result, null, 2));
-                } catch (error) {
-                  setRagOutput(`RAG query failed:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Run RAG Query
-            </button>
-          </div>
-          {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
-          <pre className="status-box">{ragStatus}</pre>
-          <pre className="log-box">{ragOutput}</pre>
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="section-title">
-          <span className="section-number">5</span>
-          <h2>Temp File Inspector</h2>
-        </div>
-        <div className="card-content">
-          <div className="actions">
-            <button
-              disabled={Boolean(busy.tmpRefresh)}
-              onClick={() => runWithBusy('tmpRefresh', async () => {
-                try {
                   await refreshTmpFiles();
                 } catch (error) {
-                  setTmpStatus(`Failed to list temp files:\n${String(error.message || error)}`);
+                  setSetupStatus(`Workspace refresh failed:\n${String(error.message || error)}`);
                 }
               })}
-            >
-              Refresh Temp Files
-            </button>
-            <button
-              disabled={Boolean(busy.tmpOpen)}
-              onClick={() => runWithBusy('tmpOpen', async () => {
-                try {
-                  if (!selectedTmpFile) {
-                    setTmpStatus('No /tmp file is selected.');
-                    return;
-                  }
-                  const result = await api.readTmpFile(selectedTmpFile);
-                  setTmpStatus(result.truncated
-                    ? `Opened ${result.path} (${result.size} bytes, showing first 307200 bytes)`
-                    : `Opened ${result.path} (${result.size} bytes)`);
-                  setTmpContent(result.content || '(file is empty)');
-                } catch (error) {
-                  setTmpStatus(`Failed to read /tmp file:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Open Selected File
-            </button>
-            <button
-              disabled={Boolean(busy.tmpFetchSnapshot)}
-              onClick={() => runWithBusy('tmpFetchSnapshot', async () => {
-                try {
-                  setTmpStatus('Requesting live scene snapshot from Blender...');
-                  const response = await api.fetchSceneSnapshot();
-                  const files = await refreshTmpFiles();
-                  const hasResultFile = files.some((file) => file.path === response.path);
-                  if (hasResultFile) {
-                    setSelectedTmpFile(response.path);
-                  }
+            />
 
-                  const sceneCount = Array.isArray(response.result.scene_objects) ? response.result.scene_objects.length : 0;
-                  setTmpStatus(`Fetched snapshot (${sceneCount} scene object(s), request_id=${response.requestId}).`);
-                  setTmpContent(JSON.stringify(response.result, null, 2));
-                } catch (error) {
-                  setTmpStatus(`Failed to fetch scene snapshot:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Fetch Scene Snapshot
-            </button>
-            <button
-              className={buttonClass(true)}
-              disabled={Boolean(busy.tmpResetResult)}
-              onClick={() => runWithBusy('tmpResetResult', async () => {
-                try {
-                  const result = await api.resetResultFile();
-                  const files = await refreshTmpFiles();
-                  const hasResultFile = files.some((file) => file.path === result.path);
-                  if (hasResultFile) {
-                    setSelectedTmpFile(result.path);
-                  }
-                  setTmpStatus(`Reset ${result.path}`);
-                  setTmpContent(JSON.stringify(result.payload, null, 2));
-                } catch (error) {
-                  setTmpStatus(`Failed to reset result file:\n${String(error.message || error)}`);
-                }
-              })}
-            >
-              Reset blender_result.json
-            </button>
-          </div>
-          <label>
-            Relevant temp file
-            <select value={selectedTmpFile} onChange={(event) => setSelectedTmpFile(event.target.value)}>
-              {tmpFiles.length === 0 && (
-                <option value="">No relevant files found in temp dir</option>
+            <div className="workspace-content">
+              {currentWorkspace === 'setup' && (
+                <section className="card">
+                  <div className="section-title">
+                    {/* <span className="section-number">1</span> */}
+                    <h2>Setup Checks</h2>
+                  </div>
+                  <div className="card-content">
+                    <div className="actions">
+                      <button
+                        disabled={Boolean(busy.checkSetup)}
+                        onClick={() => runWithBusy('checkSetup', async () => {
+                          try {
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setSetupStatus(String(error.message || error));
+                          }
+                        })}
+                      >
+                        Refresh Status
+                      </button>
+                      <button
+                        disabled={!blenderReady || Boolean(busy.launchBlender)}
+                        onClick={() => runWithBusy('launchBlender', async () => {
+                          try {
+                            const result = await api.launchBlender();
+                            setSetupStatus(`Blender launch requested:\n${result.blenderAppPath}`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setSetupStatus(`Blender launch failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Launch Blender
+                      </button>
+                      <button
+                        disabled={Boolean(busy.downloadBlender)}
+                        onClick={() => runWithBusy('downloadBlender', async () => {
+                          try {
+                            const result = await api.openBlenderDownload();
+                            setSetupStatus(`Opened Blender download page:\n${result.url}`);
+                          } catch (error) {
+                            setSetupStatus(`Failed to open Blender download page:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Download Blender
+                      </button>
+                      <button
+                        disabled={Boolean(busy.installNode)}
+                        onClick={() => runWithBusy('installNode', async () => {
+                          try {
+                            const result = await api.installNode();
+                            if (result?.alreadyRunning) {
+                              setSetupStatus('Node.js install is already running in the background.');
+                            } else {
+                              setSetupStatus('Node.js install started in background. You can continue using the launcher while it runs.');
+                            }
+                          } catch (error) {
+                            setSetupStatus(`Node install failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Install Node.js
+                      </button>
+                      <button
+                        disabled={!nodeReady || Boolean(busy.installDeps) || Boolean(installState?.installing)}
+                        onClick={() => runWithBusy('installDeps', async () => {
+                          try {
+                            const output = await api.installDependencies();
+                            setSetupStatus(`Dependencies installed.\n\n${output}`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setSetupStatus(`Dependency install failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        {installState?.installing ? 'Installing…' : 'Install MCP Dependencies'}
+                      </button>
+                      <button
+                        disabled={Boolean(busy.installAddon)}
+                        onClick={() => runWithBusy('installAddon', async () => {
+                          try {
+                            const file = await api.installAddon();
+                            setSetupStatus(`Addon installed to:\n${file}`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setSetupStatus(`Addon install failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Install Blender Addon
+                      </button>
+                    </div>
+                    {!blenderReady && <pre className="status-hint">{blenderRequiredHint}</pre>}
+                    {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
+                    {addonActivationSteps}
+                    {promptingReady && <pre className="status-hint workspace-note">Setup looks ready — use Chat in the sidebar to start prompting Blender.</pre>}
+                    <pre className="status-box">{setupStatus}</pre>
+                  </div>
+                </section>
               )}
-              {tmpFiles.map((file) => (
-                <option key={file.path} value={file.path}>
-                  {`${file.name} (${file.size} bytes, ${file.modifiedAt})`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <pre className="status-box">{tmpStatus}</pre>
-          <pre className="status-hint">{selectedTmpLabel}</pre>
-          <pre className="log-box">{tmpContent}</pre>
+
+              {currentWorkspace === 'connections' && (
+                <section className="card">
+                  <div className="section-title">
+                    {/* <span className="section-number">2</span> */}
+                    <h2>Configure Hosts</h2>
+                  </div>
+                  <div className="card-content">
+                    <div className="checklist">
+                      <div className="check-item">
+                        <span>Claude Desktop app installed</span>
+                        {statusPill(claudeDesktopReady)}
+                      </div>
+                      <div className="check-item">
+                        <span>Codex CLI installed</span>
+                        {statusPill(codexReady)}
+                      </div>
+                      <div className="check-item">
+                        <span>ChatGPT desktop app installed</span>
+                        {statusPill(chatgptDesktopReady)}
+                      </div>
+                    </div>
+                    <div className="actions">
+                      <button
+                        disabled={Boolean(busy.getClaudeDesktop)}
+                        onClick={() => runWithBusy('getClaudeDesktop', async () => {
+                          try {
+                            const result = await api.openClaudeDownload();
+                            setConfigStatus(`Opened Claude Desktop download page:\n${result.url}`);
+                          } catch (error) {
+                            setConfigStatus(`Failed to open Claude Desktop download page:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Get Claude Desktop
+                      </button>
+                      <button
+                        disabled={!nodeReady || Boolean(busy.installCodexCli)}
+                        onClick={() => runWithBusy('installCodexCli', async () => {
+                          try {
+                            const result = await api.installCodexCli();
+                            setConfigStatus(formatCodexInstallResult(result));
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setConfigStatus(`Codex install failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Install Codex CLI
+                      </button>
+                      <button
+                        disabled={Boolean(busy.openCodexDocs)}
+                        onClick={() => runWithBusy('openCodexDocs', async () => {
+                          try {
+                            const result = await api.openCodexInstallDocs();
+                            setConfigStatus(`Opened Codex install docs:\n${result.url}`);
+                          } catch (error) {
+                            setConfigStatus(`Failed to open Codex install docs:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Open Codex Install Docs
+                      </button>
+                      <button
+                        disabled={Boolean(busy.getChatgptDesktop)}
+                        onClick={() => runWithBusy('getChatgptDesktop', async () => {
+                          try {
+                            const result = await api.openChatgptDownload();
+                            setConfigStatus(`Opened ChatGPT desktop download page:\n${result.url}`);
+                          } catch (error) {
+                            setConfigStatus(`Failed to open ChatGPT download page:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Get ChatGPT Desktop
+                      </button>
+                      <button
+                        disabled={!nodeReady || !claudeDesktopReady || Boolean(busy.configureClaude)}
+                        onClick={() => runWithBusy('configureClaude', async () => {
+                          try {
+                            const result = await api.configureClaude();
+                            const backupNote = result.backupPath
+                              ? `\nBackup created:\n${result.backupPath}`
+                              : '\nNo previous file existed, so no backup was created.';
+                            setConfigStatus(`Claude Desktop config updated:\n${result.path}${backupNote}\n\nRestart Claude Desktop to reload MCP servers.`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setConfigStatus(`Failed to configure Claude:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Configure Claude Desktop
+                      </button>
+                      <button
+                        disabled={Boolean(busy.restoreClaude)}
+                        onClick={() => runWithBusy('restoreClaude', async () => {
+                          try {
+                            const result = await api.restoreClaudeConfig();
+                            setConfigStatus(`Claude config restored:\n${result.path}\n\nRestored from:\n${result.restoredFrom}`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setConfigStatus(`Failed to restore Claude config:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Restore Claude Backup
+                      </button>
+                      <button
+                        disabled={!nodeReady || !codexReady || Boolean(busy.configureCodex)}
+                        onClick={() => runWithBusy('configureCodex', async () => {
+                          try {
+                            const result = await api.configureCodex();
+                            const backupNote = result.backupPath
+                              ? `\nBackup created:\n${result.backupPath}`
+                              : '\nNo previous file existed, so no backup was created.';
+                            setConfigStatus(`Codex config updated:\n${result.path}${backupNote}`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setConfigStatus(`Failed to configure Codex:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Configure Codex
+                      </button>
+                      <button
+                        disabled={Boolean(busy.restoreCodex)}
+                        onClick={() => runWithBusy('restoreCodex', async () => {
+                          try {
+                            const result = await api.restoreCodexConfig();
+                            setConfigStatus(`Codex config restored:\n${result.path}\n\nRestored from:\n${result.restoredFrom}`);
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setConfigStatus(`Failed to restore Codex config:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Restore Codex Backup
+                      </button>
+                      <button
+                        disabled={Boolean(busy.installAssistantPacks)}
+                        onClick={() => runWithBusy('installAssistantPacks', async () => {
+                          try {
+                            const result = await api.installAssistantPacks();
+                            setConfigStatus(
+                              [
+                                'Assistant templates installed.',
+                                '',
+                                `Codex skills: ${result.codex.installed}`,
+                                `Target: ${result.codex.targetRoot}`,
+                                '',
+                                `Claude skills: ${result.claudeSkills.installed}`,
+                                `Target: ${result.claudeSkills.targetRoot}`,
+                                '',
+                                `Claude app local-agent copies: ${result.claudeLocalAgent.totalCopies}`,
+                                `Sessions detected: ${result.claudeLocalAgent.sessionsFound}`,
+                                `Manifests updated: ${result.claudeLocalAgent.manifestsUpdated}`,
+                                '',
+                                `Claude sub-agents: ${result.claudeSubAgents.installed}`,
+                                `Target: ${result.claudeSubAgents.targetRoot}`,
+                              ].join('\n')
+                            );
+                          } catch (error) {
+                            setConfigStatus(`Failed to install assistant templates:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Install Agents/Skills
+                      </button>
+                      <button
+                        disabled={Boolean(busy.exportClaudeSkillsZip)}
+                        onClick={() => runWithBusy('exportClaudeSkillsZip', async () => {
+                          try {
+                            const result = await api.exportClaudeSkillsZip();
+                            setConfigStatus(
+                              [
+                                'Claude skills ZIP exported.',
+                                '',
+                                `File: ${result.zipPath}`,
+                                `Skills included: ${result.skillsIncluded}`,
+                                `Source: ${result.sourceRoot}`,
+                              ].join('\n')
+                            );
+                          } catch (error) {
+                            setConfigStatus(`Failed to export Claude skills ZIP:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Export Claude Skills ZIP
+                      </button>
+                    </div>
+                    {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
+                    {aiHostsRequiredHint && <pre className="status-hint">{aiHostsRequiredHint}</pre>}
+                    <pre className="status-box">{configStatus}</pre>
+                  </div>
+                </section>
+              )}
+
+              {currentWorkspace === 'server' && (
+                <section className="card">
+                  <div className="section-title">
+                    {/* <span className="section-number">3</span> */}
+                    <h2>Server Control</h2>
+                  </div>
+                  <div className="card-content">
+                    <div className="server-form">
+                      <label>
+                        Transport
+                        <select value={transport} onChange={(event) => setTransport(event.target.value)}>
+                          <option value="stdio">stdio (Claude/Codex)</option>
+                          <option value="http">http (ChatGPT connector)</option>
+                        </select>
+                      </label>
+                      <label>
+                        Host
+                        <input value={host} onChange={(event) => setHost(event.target.value)} />
+                      </label>
+                      <label>
+                        Port
+                        <input value={port} onChange={(event) => setPort(event.target.value)} />
+                      </label>
+                      <label>
+                        Auth Token (optional)
+                        <input
+                          placeholder="MCP_AUTH_TOKEN"
+                          value={authToken}
+                          onChange={(event) => setAuthToken(event.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="actions">
+                      <button
+                        disabled={!nodeReady || Boolean(busy.startServer)}
+                        onClick={() => handleStartServerFromHeader('startServer')}
+                      >
+                        Start Server
+                      </button>
+                      <button
+                        className={buttonClass(true)}
+                        disabled={Boolean(busy.stopServer)}
+                        onClick={() => runWithBusy('stopServer', async () => {
+                          try {
+                            await api.stopServer();
+                            setServerStatus('Stop signal sent.');
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setServerStatus(`Stop failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Stop Server
+                      </button>
+                    </div>
+                    {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
+                    <pre className="status-box">{serverStatus}</pre>
+                    <pre className="log-box">{serverLogs}</pre>
+                  </div>
+                </section>
+              )}
+
+              {currentWorkspace === 'rag' && (
+                <section className="card">
+                  <div className="section-title">
+                    {/* <span className="section-number">4</span> */}
+                    <h2>RAG Control</h2>
+                  </div>
+                  <div className="card-content">
+                    <div className="server-form">
+                      <label>
+                        Query text
+                        <input
+                          value={ragQueryText}
+                          onChange={(event) => setRagQueryText(event.target.value)}
+                          placeholder="What are the Blender delete safeguards?"
+                        />
+                      </label>
+                      <label>
+                        Top K
+                        <input
+                          value={ragTopK}
+                          onChange={(event) => setRagTopK(event.target.value)}
+                          placeholder="5"
+                        />
+                      </label>
+                    </div>
+                    <div className="actions">
+                      <button
+                        disabled={Boolean(busy.ragRefreshStatus)}
+                        onClick={() => runWithBusy('ragRefreshStatus', async () => {
+                          try {
+                            await refreshRagStatus();
+                          } catch (error) {
+                            setRagStatus(`Failed to read RAG status:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Refresh RAG Status
+                      </button>
+                      <button
+                        disabled={!nodeReady || Boolean(busy.ragIndex)}
+                        onClick={() => runWithBusy('ragIndex', async () => {
+                          try {
+                            const result = await api.ragIndex();
+                            setRagStatus(formatRagStatus(result.ragStatus));
+                            setRagOutput(
+                              [
+                                'RAG index complete.',
+                                '',
+                                `Store: ${result.ragStatus?.storePath || '(unknown)'}`,
+                                `Files indexed: ${result.indexResult?.files_indexed ?? result.ragStatus?.filesIndexed ?? 0}`,
+                                `Chunks indexed: ${result.indexResult?.chunks_indexed ?? result.ragStatus?.chunksIndexed ?? 0}`,
+                                `Indexed at: ${result.indexResult?.indexed_at || result.ragStatus?.indexedAt || '(unknown)'}`,
+                                `Missing patterns: ${(result.indexResult?.missing_patterns || []).join(', ') || '(none)'}`,
+                              ].join('\n')
+                            );
+                            await refreshSetupStatus();
+                          } catch (error) {
+                            setRagOutput(`RAG index failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Build/Refresh RAG Index
+                      </button>
+                      <button
+                        disabled={!nodeReady || Boolean(busy.ragQuery)}
+                        onClick={() => runWithBusy('ragQuery', async () => {
+                          try {
+                            const topKValue = Number(ragTopK);
+                            const topK = Number.isFinite(topKValue) ? topKValue : 5;
+                            const result = await api.ragQuery({
+                              query: ragQueryText,
+                              topK,
+                            });
+
+                            setRagOutput(JSON.stringify(result, null, 2));
+                          } catch (error) {
+                            setRagOutput(`RAG query failed:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Run RAG Query
+                      </button>
+                    </div>
+                    {!nodeReady && <pre className="status-hint">{nodeRequiredHint}</pre>}
+                    <pre className="status-box">{ragStatus}</pre>
+                    <pre className="log-box">{ragOutput}</pre>
+                  </div>
+                </section>
+              )}
+
+              {currentWorkspace === 'chat' && (
+                <ChatWorkspace
+                  api={api}
+                  busy={busy}
+                  promptingReady={promptingReady}
+                  promptingRequiredHint={promptingRequiredHint}
+                  runWithBusy={runWithBusy}
+                  refreshTmpFiles={refreshTmpFiles}
+                  setSelectedTmpFile={setSelectedTmpFile}
+                  {...promptWorkspace}
+                />
+              )}
+
+              {currentWorkspace === 'files' && (
+                <section className="card">
+                  <div className="section-title">
+                    {/* <span className="section-number">6</span> */}
+                    <h2>Temp File Inspector</h2>
+                  </div>
+                  <div className="card-content">
+                    <div className="actions">
+                      <button
+                        disabled={Boolean(busy.tmpRefresh)}
+                        onClick={() => runWithBusy('tmpRefresh', async () => {
+                          try {
+                            await refreshTmpFiles();
+                          } catch (error) {
+                            setTmpStatus(`Failed to list temp files:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Refresh Temp Files
+                      </button>
+                      <button
+                        disabled={Boolean(busy.tmpOpen)}
+                        onClick={() => runWithBusy('tmpOpen', async () => {
+                          try {
+                            if (!selectedTmpFile) {
+                              setTmpStatus('No /tmp file is selected.');
+                              return;
+                            }
+                            const result = await api.readTmpFile(selectedTmpFile);
+                            setTmpStatus(result.truncated
+                              ? `Opened ${result.path} (${result.size} bytes, showing first 307200 bytes)`
+                              : `Opened ${result.path} (${result.size} bytes)`);
+                            setTmpContent(result.content || '(file is empty)');
+                          } catch (error) {
+                            setTmpStatus(`Failed to read /tmp file:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Open Selected File
+                      </button>
+                      <button
+                        disabled={Boolean(busy.tmpFetchSnapshot)}
+                        onClick={() => runWithBusy('tmpFetchSnapshot', async () => {
+                          try {
+                            setTmpStatus('Requesting live scene snapshot from Blender...');
+                            const response = await api.fetchSceneSnapshot();
+                            const files = await refreshTmpFiles();
+                            const hasResultFile = files.some((file) => file.path === response.path);
+                            if (hasResultFile) {
+                              setSelectedTmpFile(response.path);
+                            }
+
+                            const sceneCount = Array.isArray(response.result.scene_objects) ? response.result.scene_objects.length : 0;
+                            setTmpStatus(`Fetched snapshot (${sceneCount} scene object(s), request_id=${response.requestId}).`);
+                            setTmpContent(JSON.stringify(response.result, null, 2));
+                          } catch (error) {
+                            setTmpStatus(`Failed to fetch scene snapshot:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Fetch Scene Snapshot
+                      </button>
+                      <button
+                        className={buttonClass(true)}
+                        disabled={Boolean(busy.tmpResetResult)}
+                        onClick={() => runWithBusy('tmpResetResult', async () => {
+                          try {
+                            const result = await api.resetResultFile();
+                            const files = await refreshTmpFiles();
+                            const hasResultFile = files.some((file) => file.path === result.path);
+                            if (hasResultFile) {
+                              setSelectedTmpFile(result.path);
+                            }
+                            setTmpStatus(`Reset ${result.path}`);
+                            setTmpContent(JSON.stringify(result.payload, null, 2));
+                          } catch (error) {
+                            setTmpStatus(`Failed to reset result file:\n${String(error.message || error)}`);
+                          }
+                        })}
+                      >
+                        Reset blender_result.json
+                      </button>
+                    </div>
+                    <label>
+                      Relevant temp file
+                      <select value={selectedTmpFile} onChange={(event) => setSelectedTmpFile(event.target.value)}>
+                        {tmpFiles.length === 0 && (
+                          <option value="">No relevant files found in temp dir</option>
+                        )}
+                        {tmpFiles.map((file) => (
+                          <option key={file.path} value={file.path}>
+                            {`${file.name} (${file.size} bytes, ${file.modifiedAt})`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <pre className="status-box">{tmpStatus}</pre>
+                    <pre className="status-hint">{selectedTmpLabel}</pre>
+                    <pre className="log-box">{tmpContent}</pre>
+                  </div>
+                </section>
+              )}
+            </div>
+          </section>
         </div>
-      </section>
-    </main>
+      </main>
     </>
   );
 }

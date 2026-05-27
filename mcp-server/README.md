@@ -1,9 +1,9 @@
 # Blender MCP Server
 
-MCP server that enables Claude, Codex, and ChatGPT to generate, explain, and debug Blender Python code.
+MCP server that enables Claude, Codex, Gemini CLI, Copilot CLI, and ChatGPT to generate, explain, and debug Blender Python code.
 
 It supports two transports:
-- `stdio` for Claude Desktop and Codex
+- `stdio` for Claude Desktop, Codex, Gemini CLI, and Copilot CLI
 - `http` (Streamable HTTP) for ChatGPT custom MCP connectors
 
 It also includes a local OpenAI API bridge script (no ChatGPT connector required).
@@ -69,7 +69,46 @@ Codex stores MCP config in:
 
 In the Codex TUI, run `/mcp` to verify the `blender` server is active.
 
-### 4. Run With ChatGPT Connector (HTTP)
+### 4. Run With Gemini CLI (stdio)
+
+Quick setup from repo root:
+
+```bash
+./scripts/setup-gemini-mcp.sh
+```
+
+Gemini config paths:
+- `~/.gemini/settings.json` (global)
+- `.gemini/settings.json` (project)
+
+Optional Blender skills install:
+
+```bash
+./scripts/install-gemini-skills.sh
+```
+
+In Gemini CLI, run `/mcp list` to verify the `blender` server is connected.
+
+### 5. Run With Copilot CLI (stdio)
+
+Quick setup from repo root:
+
+```bash
+./scripts/setup-copilot-mcp.sh
+```
+
+Copilot config path:
+- `~/.copilot/mcp-config.json`
+
+Optional Blender agent install:
+
+```bash
+./scripts/install-copilot-agents.sh
+```
+
+In Copilot CLI, run `/mcp show` to verify the `blender` server is active.
+
+### 6. Run With ChatGPT Connector (HTTP)
 
 Start server in HTTP mode:
 
@@ -86,7 +125,7 @@ MCP_TRANSPORT=http HOST=127.0.0.1 PORT=3030 MCP_AUTH_TOKEN=your-long-token npm r
 
 Expose the local port with a tunnel so ChatGPT can reach it (for example Cloudflare Tunnel or ngrok), then add that public URL as a custom MCP connector in ChatGPT workspace settings.
 
-### 5. Run Local OpenAI API Bridge (No Connector)
+### 7. Run Local OpenAI API Bridge (No Connector)
 
 This is the simplest automation path for ChatGPT/OpenAI models without setting up a remote connector.
 

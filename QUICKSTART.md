@@ -1,13 +1,13 @@
 # Quick Start Guide
 
-Get up and running with Claude, Codex, or ChatGPT in 5 minutes.
+Get up and running with Claude, Codex, Gemini CLI, Copilot CLI, or ChatGPT in 5 minutes.
 
 ## Prerequisites Checklist
 
 - [ ] Blender 5.0+ installed
 - [ ] Node.js 18+ installed ([download](https://nodejs.org/))
-- [ ] Claude Desktop app and/or Codex app/CLI installed (for stdio mode), and/or ChatGPT workspace with custom connector support
-- [ ] OpenAI API key (for Option D local bridge)
+- [ ] Claude Desktop and/or Codex CLI and/or Gemini CLI and/or GitHub Copilot CLI installed (for stdio mode), and/or ChatGPT workspace with custom connector support
+- [ ] OpenAI API key (for Option F local bridge)
 
 ## Installation Steps
 
@@ -65,7 +65,46 @@ Codex config paths:
 
 In Codex TUI, run `/mcp` and confirm `blender` is active.
 
-#### Option C: ChatGPT custom connector (HTTP)
+#### Option C: Gemini CLI (stdio)
+
+Quick setup (from repo root):
+
+```bash
+./scripts/setup-gemini-mcp.sh
+```
+
+Gemini config paths:
+- Global: `~/.gemini/settings.json`
+- Project: `.gemini/settings.json`
+
+Optional Blender skills install:
+
+```bash
+./scripts/install-gemini-skills.sh
+```
+
+Run `/mcp list` and `/skills list` in Gemini CLI to verify.
+
+#### Option D: GitHub Copilot CLI (stdio)
+
+Quick setup (from repo root):
+
+```bash
+./scripts/setup-copilot-mcp.sh
+```
+
+Copilot MCP config path:
+- `~/.copilot/mcp-config.json`
+
+Optional Blender agent install:
+
+```bash
+./scripts/install-copilot-agents.sh
+```
+
+Run `/mcp show` and `/agent` in Copilot CLI to verify.
+
+#### Option E: ChatGPT custom connector (HTTP)
 
 ```bash
 cd mcp-server
@@ -77,7 +116,7 @@ Then:
 2. In ChatGPT workspace settings, add a custom MCP connector to `https://<your-domain>/mcp`
 3. Configure bearer token auth with `your-long-token`
 
-#### Option D: OpenAI API local bridge (no connector)
+#### Option F: OpenAI API local bridge (no connector)
 
 ```bash
 cd mcp-server
@@ -104,7 +143,7 @@ Blender will auto-execute code from `/tmp/blender_claude_execute.py`.
 2. Go to "Claude Tools" tab
 3. Click "Enable Auto-Execute"
 
-**In Claude, Codex, or ChatGPT**:
+**In Claude, Codex, Gemini, Copilot, or ChatGPT**:
 Type: "Create a simple cube at the origin"
 
 **In Blender**:

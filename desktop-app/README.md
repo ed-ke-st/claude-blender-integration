@@ -4,6 +4,10 @@ Desktop control panel for this integration so users do not need to run setup com
 
 On first launch, the app opens a guided onboarding wizard with step-by-step setup actions.
 
+After onboarding, the main app switches to a sidebar layout. When the environment is ready, **Chat** is the default workspace; otherwise the app lands on **Setup** until prerequisites are complete.
+
+The sidebar can now be collapsed on larger windows into an icon-only rail. On smaller windows, it switches to a drawer that overlays the workspace instead of forcing the content into a stacked layout.
+
 ## App name and icon branding
 
 The packaged app name is set by `build.productName` in `package.json`:
@@ -22,6 +26,9 @@ To replace the default Electron icon, add files to:
 - Installs Blender addon to your local Blender addons path
 - Configures Claude Desktop MCP entry
 - Configures Codex MCP entry
+- Leaves Gemini CLI and Copilot CLI setup to the repo scripts for now
+- Runs Phase 4 in-app prompting with OpenAI or Gemini AI Studio, including agent-loop retries, session history, optional live scene snapshots, and saved profiles
+- Uses a sidebar workspace layout with Chat, Setup, Connections, RAG, Server, and Temp Files views
 - Bundles assistant templates (`assistant-packs`) in packaged app resources
 - Exports a Claude Skills ZIP to `~/Downloads` for Claude app upload workflows
 - Creates automatic timestamped backups before config edits
@@ -145,6 +152,8 @@ This repository includes cross-client templates in `assistant-packs/`:
 
 - Claude sub-agents: `assistant-packs/claude/sub-agents/`
 - Codex skills: `assistant-packs/codex/skills/`
+- Gemini CLI skills: `assistant-packs/gemini/skills/`
+- Copilot CLI agents: `assistant-packs/copilot/agents/`
 - ChatGPT project instructions: `assistant-packs/chatgpt/project-instructions.md`
 
 Install from repo root:
@@ -153,9 +162,48 @@ Install from repo root:
 ./scripts/install-codex-skills.sh
 ./scripts/install-claude-skills.sh
 ./scripts/install-claude-subagents.sh
+./scripts/install-gemini-skills.sh
+./scripts/install-copilot-agents.sh
 ```
 
 In the app UI, you can also use:
 - **Install Agents/Skills** to install local Codex/Claude templates
 - **Install Agents/Skills** also syncs Claude skills into detected local-agent session skill folders and updates each session `manifest.json`
 - **Export Claude Skills ZIP** to generate an uploadable zip in `~/Downloads`
+
+Gemini CLI and Copilot CLI support is currently script-based rather than automated in the desktop UI:
+
+```bash
+./scripts/setup-gemini-mcp.sh
+./scripts/setup-copilot-mcp.sh
+```
+
+## In-app prompting (Phase 4)
+
+The launcher now includes a first in-app prompting flow so you do not need a separate AI desktop app or CLI just to send a Blender request.
+
+Normal app navigation:
+- Sidebar-first layout after onboarding
+- **Chat** becomes the primary workspace when setup is complete
+- Setup and maintenance tools remain available from sidebar views
+- The sidebar collapses on wider windows and becomes an overlay drawer on smaller ones
+
+Current Phase 4 behavior:
+- Enter a Blender request in the launcher
+- Optionally add extra context, conversation history, a live scene snapshot, and local RAG context
+- Choose OpenAI or Gemini AI Studio
+- Provide the matching API key and model
+- Save reusable prompt profiles for provider/model/context/toggle presets
+- Enable agent loop mode so the launcher can inspect Blender/tool results and retry automatically
+- Set a maximum attempt count for the loop
+- Review the session conversation pane between prompt runs
+- Review the agent attempt trace for each run
+- The launcher generates Blender Python and writes it to the Blender watched file
+- The latest Blender execution result is shown in the app
+- If the local RAG index has not been built yet, prompting continues without RAG context and shows a warning instead of failing
+- Saved profiles persist across launcher restarts, but API keys and conversation history remain session-only
+
+Requirements:
+- `mcp-server` dependencies installed
+- Blender addon installed and Auto-Execute enabled
+- OpenAI API key or Gemini AI Studio API key

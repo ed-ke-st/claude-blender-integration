@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('launcherApi', {
   readTmpFile: (filePath) => ipcRenderer.invoke('tmp:read-file', filePath),
   resetResultFile: () => ipcRenderer.invoke('tmp:reset-result'),
   fetchSceneSnapshot: () => ipcRenderer.invoke('tmp:fetch-snapshot'),
+  runPrompt: (options) => ipcRenderer.invoke('prompt:run', options),
+  runCodexPrompt: (options) => ipcRenderer.invoke('agent:codex-run', options),
+  runClaudePrompt: (options) => ipcRenderer.invoke('agent:claude-run', options),
   ragStatus: () => ipcRenderer.invoke('rag:status'),
   ragIndex: () => ipcRenderer.invoke('rag:index'),
   ragQuery: (options) => ipcRenderer.invoke('rag:query', options),
@@ -31,6 +34,11 @@ contextBridge.exposeInMainWorld('launcherApi', {
     const handler = (_event, line) => callback(line);
     ipcRenderer.on('server-log', handler);
     return () => ipcRenderer.removeListener('server-log', handler);
+  },
+  onAgentRunProgress: (callback) => {
+    const handler = (_event, progressEvent) => callback(progressEvent);
+    ipcRenderer.on('agent-run-progress', handler);
+    return () => ipcRenderer.removeListener('agent-run-progress', handler);
   },
   onInstallState: (callback) => {
     const handler = (_event, state) => callback(state);

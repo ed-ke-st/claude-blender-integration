@@ -14,6 +14,11 @@ Thumbs.db
 # Logs
 *.log
 
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
 # IDE
 .vscode/
 .idea/
@@ -22,6 +27,9 @@ Thumbs.db
 *~
 /.AGENTS.md
 .rag/
+coverage/
+/dist/
+/build/
 
 # Temp
 tmp/
@@ -30,6 +38,9 @@ temp/
 # Desktop app
 desktop-app/node_modules/
 desktop-app/dist/
+desktop-app/out/
+desktop-app/release/
 
 # Local assistant runtime artifacts
 .claude/
+.codex/

@@ -2,12 +2,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_ROOT="$REPO_ROOT/assistant-packs/codex/skills"
-CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
-TARGET_ROOT="$CODEX_HOME_DIR/skills"
+SOURCE_ROOT="$REPO_ROOT/assistant-packs/gemini/skills"
+GEMINI_HOME_DIR="${GEMINI_HOME:-$HOME/.gemini}"
+TARGET_ROOT="$GEMINI_HOME_DIR/skills"
 
 if [ ! -d "$SOURCE_ROOT" ]; then
-  echo "Error: source skills folder not found:"
+  echo "Error: source Gemini skills folder not found:"
   echo "  $SOURCE_ROOT"
   exit 1
 fi
@@ -24,14 +24,14 @@ for skill_dir in "$SOURCE_ROOT"/*; do
   mkdir -p "$target_dir"
   cp -f "$source_skill" "$target_dir/SKILL.md"
   installed=$((installed + 1))
-  echo "Installed Codex skill: $name -> $target_dir"
+  echo "Installed Gemini skill: $name -> $target_dir"
 done
 
 if [ "$installed" -eq 0 ]; then
-  echo "No skills installed (no skill directories found)."
+  echo "No Gemini skills installed."
   exit 1
 fi
 
 echo
-echo "Installed $installed Codex skill(s)."
-echo "Restart Codex or open a new session to load updated skills."
+echo "Installed $installed Gemini skill(s)."
+echo "Start a new Gemini CLI session or run /skills reload to pick them up."

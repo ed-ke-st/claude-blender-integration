@@ -1,6 +1,6 @@
-# Claude + ChatGPT + Codex Blender Integration
+# Claude + Codex + Gemini + Copilot + ChatGPT Blender Integration
 
-AI-powered 3D modeling in Blender using Claude, ChatGPT, or Codex. Create and modify 3D objects with natural language prompts through an automated workflow.
+AI-powered 3D modeling in Blender using Claude, Codex, Gemini CLI, Copilot CLI, or ChatGPT. Create and modify 3D objects with natural language prompts through an automated workflow.
 
 ![Blender Version](https://img.shields.io/badge/Blender-5.0+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -20,18 +20,20 @@ If you want setup without terminal commands, use the desktop launcher in:
 
 `desktop-app/`
 
-It provides one-click setup checks, dependency install, addon install, Claude/Codex config updates, and MCP server start/stop.
+It provides one-click setup checks, dependency install, addon install, Claude/Codex config updates, MCP server start/stop, and a chat-first collapsible-sidebar desktop UI with Phase 4 in-app prompting through either the OpenAI API or Gemini AI Studio with agent-loop retries, session history, optional live scene snapshots, optional local RAG context, and saved profiles. Gemini CLI and Copilot CLI are supported through the repo scripts below.
 
 See:
 - `desktop-app/README.md`
 
 ## Assistant Packs (Agents/Skills)
 
-This repo ships reusable assistant packs for Claude, Codex, and ChatGPT:
+This repo ships reusable assistant packs for Claude, Codex, Gemini CLI, Copilot CLI, and ChatGPT:
 
 - `assistant-packs/codex/skills/`
 - `assistant-packs/claude/skills/`
 - `assistant-packs/claude/sub-agents/`
+- `assistant-packs/gemini/skills/`
+- `assistant-packs/copilot/agents/`
 - `assistant-packs/chatgpt/project-instructions.md`
 
 Install from repo root:
@@ -40,12 +42,16 @@ Install from repo root:
 ./scripts/install-codex-skills.sh
 ./scripts/install-claude-skills.sh
 ./scripts/install-claude-subagents.sh
+./scripts/install-gemini-skills.sh
+./scripts/install-copilot-agents.sh
 ```
 
 Then:
 - Codex: open a new session and run `/mcp` (and `/skills` if available)
 - Claude Code: start a new session to load skills from `~/.claude/skills/`
 - Claude sub-agents (if supported): templates are in `~/.claude/agents/`
+- Gemini CLI: open a new session and run `/skills list` and `/mcp list`
+- Copilot CLI: open a new session and run `/agent` and `/mcp show`
 - ChatGPT: paste template from `assistant-packs/chatgpt/project-instructions.md` into project instructions
 
 ## Local RAG Retrieval (Optional)
@@ -85,7 +91,7 @@ Blender: *creates the object automatically*
                   /tmp/blender_claude_execute.py
 ```
 
-1. You describe what you want in Claude/Codex/ChatGPT
+1. You describe what you want in Claude/Codex/Gemini/Copilot/ChatGPT
 2. Your assistant uses MCP tools to write Python code to a watched file
 3. Blender detects the file change and executes it automatically
 4. Object appears in your scene!
@@ -96,7 +102,7 @@ Blender: *creates the object automatically*
 
 - Blender 5.0+ (may work with 4.x)
 - Node.js 18+ (for MCP server)
-- Claude Desktop app and/or Codex app/CLI (for local stdio MCP), and/or ChatGPT workspace with custom connector support
+- Claude Desktop and/or Codex CLI and/or Gemini CLI and/or GitHub Copilot CLI (for local stdio MCP), and/or ChatGPT workspace with custom connector support
 - OpenAI API key (optional, for local API bridge mode)
 
 ### Step 1: Install Blender Addon
@@ -179,7 +185,54 @@ Codex config paths:
 Verify in Codex TUI:
 - Run `/mcp` and confirm `blender` is active.
 
-#### Option C: ChatGPT custom connector (HTTP, remote URL)
+#### Option C: Gemini CLI (stdio, local)
+
+Gemini CLI also supports local `stdio` MCP servers.
+
+Quick setup (from repo root):
+
+```bash
+./scripts/setup-gemini-mcp.sh
+```
+
+Gemini config paths:
+- Global: `~/.gemini/settings.json`
+- Project: `.gemini/settings.json`
+
+Optional Blender skills install:
+
+```bash
+./scripts/install-gemini-skills.sh
+```
+
+Verify in Gemini CLI:
+- Run `/mcp list` and confirm `blender` is connected.
+- Run `/skills list` and confirm the Blender skills are available.
+
+#### Option D: GitHub Copilot CLI (stdio, local)
+
+Copilot CLI can also run the local Blender MCP server.
+
+Quick setup (from repo root):
+
+```bash
+./scripts/setup-copilot-mcp.sh
+```
+
+Copilot MCP config path:
+- `~/.copilot/mcp-config.json`
+
+Optional Blender agent install:
+
+```bash
+./scripts/install-copilot-agents.sh
+```
+
+Verify in Copilot CLI:
+- Run `/mcp show` and confirm `blender` is active.
+- Run `/agent` and confirm the Blender agents are available.
+
+#### Option E: ChatGPT custom connector (HTTP, remote URL)
 
 1. Start MCP server in HTTP mode:
    ```bash
@@ -192,7 +245,7 @@ Verify in Codex TUI:
 
 Blender behavior is unchanged: MCP tool calls write to `/tmp/blender_claude_execute.py` by default (or `BLENDER_WATCH_FILE`), and the addon auto-executes it.
 
-#### Option D: OpenAI API local bridge (simplest automation, no connector)
+#### Option F: OpenAI API local bridge (simplest automation, no connector)
 
 1. Create an OpenAI API key and set it in your shell:
    ```bash
@@ -238,7 +291,7 @@ If details are missing, clarify these before generation:
    - Go to the "Claude Tools" tab
    - Click **"Enable Auto-Execute"**
 
-2. **In Claude, Codex, or ChatGPT**:
+2. **In Claude, Codex, Gemini, Copilot, or ChatGPT**:
    - Describe what you want: "Create a spiral staircase with 10 steps"
    - The assistant generates and writes the code automatically
    
@@ -292,7 +345,7 @@ If something goes wrong:
 2. Click **"View Full Error (Copyable)"**
 3. Error opens in Blender's Text Editor
 4. Copy the error (`Cmd+A`, `Cmd+C`)
-5. Paste it to Claude/Codex/ChatGPT for debugging
+5. Paste it to Claude/Codex/Gemini/Copilot/ChatGPT for debugging
 
 ## Examples
 

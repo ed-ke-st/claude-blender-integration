@@ -21,9 +21,3 @@ Use this skill when Blender code execution fails and the user needs a concrete f
 - Missing data-block existence checks.
 - Node input name updates for modern Blender versions.
 - Safer operator-free `bpy.data` patterns when possible.
-
-## Output format
-
-- Root cause (1 sentence)
-- Corrected code
-- Verification result

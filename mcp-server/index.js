@@ -11,14 +11,12 @@ import {
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import { retrieveContext } from "./rag/retriever.js";
-
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-const DEFAULT_WATCH_FILE = join(tmpdir(), "blender_claude_execute.py");
-const RESULT_FILE = join(tmpdir(), "blender_result.json");
-const WAIT_POLL_COUNT = 24;
-const WAIT_POLL_MS = 250;
+import {
+  DEFAULT_WATCH_FILE,
+  RESULT_FILE,
+  executeCreateInBlender,
+  waitForFreshResult,
+} from "./blender-exec.js";
 
 function createServer() {
   const server = new Server(
@@ -177,36 +175,32 @@ function createServer() {
 
     switch (name) {
       case "create_in_blender": {
-        const fs = await import("fs/promises");
-
         try {
-          const requestId = randomUUID();
-          const code = stripCodeFences(args.code);
-          const validationErrors = validateCreateCode(code);
-          if (validationErrors.length > 0) {
+          const result = await executeCreateInBlender({
+            code: args.code,
+            watchFilePath,
+          });
+
+          const response = result.resultText
+            ? `✓ Code sent to Blender.\n\nExecution result:\n${result.resultText}`
+            : `✓ Code written to ${result.watchFilePath}. Blender has not reported a result yet — auto-execute may be disabled, or the addon needs reloading.`;
+
+          return { content: [{ type: "text", text: response }] };
+        } catch (error) {
+          if (Array.isArray(error.validationErrors) && error.validationErrors.length > 0) {
             return {
               content: [
                 {
                   type: "text",
                   text:
                     "✗ create_in_blender blocked code due to static validation:\n- " +
-                    validationErrors.join("\n- ") +
+                    error.validationErrors.join("\n- ") +
                     "\n\nRegenerate using current Blender 5.0+ socket names (or call retrieve_context first).",
                 },
               ],
               isError: true,
             };
           }
-          const stampedCode = stampCodeWithRequestId(code, requestId);
-          await fs.writeFile(watchFilePath, stampedCode, "utf8");
-          const result = await waitForFreshResult(fs, watchFilePath, requestId);
-
-          const response = result
-            ? `✓ Code sent to Blender.\n\nExecution result:\n${result}`
-            : `✓ Code written to ${watchFilePath}. Blender has not reported a result yet — auto-execute may be disabled, or the addon needs reloading.`;
-
-          return { content: [{ type: "text", text: response }] };
-        } catch (error) {
           return {
             content: [
               {
@@ -240,7 +234,7 @@ function createServer() {
           const deleteToken = normalizeOptionalToken(args.delete_token);
           const code = buildDeleteScript(objectNames, deleteToken, requestId);
           await fs.writeFile(watchFilePath, code, "utf8");
-          const result = await waitForFreshResult(fs, watchFilePath, requestId);
+          const result = await waitForFreshResult({ watchFilePath, requestId });
 
           const response = result
             ? `✓ Delete request sent to Blender for: ${objectNames.join(", ")}\n\nExecution result:\n${result}`
@@ -275,7 +269,7 @@ function createServer() {
           const requestId = randomUUID();
           const probeCode = buildSnapshotProbeScript(requestId);
           await fs.writeFile(watchFilePath, probeCode, "utf8");
-          const fresh = await waitForFreshResult(fs, watchFilePath, requestId);
+          const fresh = await waitForFreshResult({ watchFilePath, requestId });
           if (fresh) {
             return {
               content: [{ type: "text", text: fresh }],
@@ -382,77 +376,6 @@ function createServer() {
   return server;
 }
 
-function stripCodeFences(text) {
-  const trimmed = text.trim();
-  if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-    const lines = trimmed.split("\n");
-    return lines.slice(1, -1).join("\n").trim();
-  }
-  return trimmed;
-}
-
-function validateCreateCode(code) {
-  const source = typeof code === "string" ? code : "";
-  const errors = [];
-
-  const checks = [
-    {
-      pattern: /inputs\[\s*(?:['"]Fac['"]|Fac)\s*\]/,
-      message: "Use 'Factor' socket name instead of 'Fac'.",
-    },
-    {
-      pattern: /inputs\[\s*(?:['"]Color1['"]|Color1)\s*\]/,
-      message: "Use 'A' socket name instead of 'Color1'.",
-    },
-    {
-      pattern: /inputs\[\s*(?:['"]Color2['"]|Color2)\s*\]/,
-      message: "Use 'B' socket name instead of 'Color2'.",
-    },
-    {
-      pattern: /inputs\[\s*(?:['"]Roughness\s+['"]|Roughness\s+)\s*\]/,
-      message: "Use exact socket name 'Roughness' (no trailing space).",
-    },
-  ];
-
-  for (const check of checks) {
-    if (check.pattern.test(source)) {
-      errors.push(check.message);
-    }
-  }
-
-  if (
-    /ShaderNodeBsdfPrincipled/.test(source) &&
-    /inputs\[\s*(?:['"]Color['"]|Color)\s*\]/.test(source)
-  ) {
-    errors.push("Principled BSDF must use 'Base Color' instead of 'Color'.");
-  }
-
-  return errors;
-}
-
-async function waitForFreshResult(fs, watchFilePath, requestId = "") {
-  for (let i = 0; i < WAIT_POLL_COUNT; i++) {
-    await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
-    try {
-      const data = await fs.readFile(RESULT_FILE, "utf8");
-      const parsed = JSON.parse(data);
-      if (requestId && parsed.request_id === requestId) {
-        return data;
-      }
-      if (requestId) {
-        continue;
-      }
-      const watchStat = await fs.stat(watchFilePath);
-      if (parsed.timestamp >= watchStat.mtimeMs / 1000 - 1) {
-        return data;
-      }
-    } catch {
-      // Result file not ready yet
-    }
-  }
-  return null;
-}
-
 function normalizeObjectNames(value) {
   if (!Array.isArray(value)) return [];
   const unique = new Set();
@@ -503,10 +426,6 @@ for _name in target_names:
 if missing:
     print("Delete skipped (not found): " + ", ".join(missing))
 `;
-}
-
-function stampCodeWithRequestId(code, requestId) {
-  return `# MCP_REQUEST_ID:${requestId}\n${code}`;
 }
 
 function buildSnapshotProbeScript(requestId) {
