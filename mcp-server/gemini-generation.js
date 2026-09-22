@@ -1,7 +1,40 @@
+import fs from "fs/promises";
+import path from "path";
+
 import { stripCodeFences } from "./blender-exec.js";
 import { buildGeneratePrompt } from "./blender-generation-prompt.js";
 
 export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+function inferImageMimeType(filePath) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  if (extension === ".png") return "image/png";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".gif") return "image/gif";
+  return "application/octet-stream";
+}
+
+async function buildAttachmentParts(attachments = []) {
+  const parts = [];
+
+  for (const attachment of attachments) {
+    const filePath = typeof attachment?.path === "string" ? attachment.path.trim() : "";
+    if (!filePath) {
+      continue;
+    }
+
+    const bytes = await fs.readFile(filePath);
+    parts.push({
+      inlineData: {
+        mimeType: inferImageMimeType(filePath),
+        data: bytes.toString("base64"),
+      },
+    });
+  }
+
+  return parts;
+}
 
 function extractTextFromGeminiResponse(payload) {
   const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
@@ -20,6 +53,7 @@ function extractTextFromGeminiResponse(payload) {
 
 export async function generateCode({
   description,
+  attachments = [],
   context = "",
   conversationHistory = "",
   sceneSnapshot = "",
@@ -43,6 +77,7 @@ export async function generateCode({
     sceneSnapshot,
     ragContext,
   });
+  const attachmentParts = await buildAttachmentParts(attachments);
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
@@ -55,7 +90,7 @@ export async function generateCode({
         contents: [
           {
             role: "user",
-            parts: [{ text: prompt }],
+            parts: [{ text: prompt }, ...attachmentParts],
           },
         ],
         systemInstruction: {

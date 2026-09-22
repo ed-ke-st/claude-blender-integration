@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('launcherApi', {
   readTmpFile: (filePath) => ipcRenderer.invoke('tmp:read-file', filePath),
   resetResultFile: () => ipcRenderer.invoke('tmp:reset-result'),
   fetchSceneSnapshot: () => ipcRenderer.invoke('tmp:fetch-snapshot'),
+  pickReferenceImages: () => ipcRenderer.invoke('attachments:pick-reference-images'),
   runPrompt: (options) => ipcRenderer.invoke('prompt:run', options),
   runCodexPrompt: (options) => ipcRenderer.invoke('agent:codex-run', options),
   runClaudePrompt: (options) => ipcRenderer.invoke('agent:claude-run', options),

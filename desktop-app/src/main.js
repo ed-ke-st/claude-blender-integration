@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const { spawn } = require('child_process');
 const fsSync = require('fs');
 const fs = require('fs/promises');
@@ -82,6 +82,7 @@ const chatgptDesktopAppCandidates = isWindows
 // users run the app (sticky bit on /tmp prevents cross-user file writes).
 const tmpRoot = os.tmpdir();
 const tmpReadLimitBytes = 300 * 1024;
+const referenceImageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
 const blenderClaudeWatchFile = path.join(tmpRoot, 'blender_claude_execute.py');
 const blenderResultFile = path.join(tmpRoot, 'blender_result.json');
 const nodeDownloadUrl = 'https://nodejs.org/en/download';
@@ -723,6 +724,44 @@ function defaultPromptModel(provider) {
   return provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4.1-mini';
 }
 
+function inferImageMimeType(filePath) {
+  const extension = path.extname(String(filePath || '')).toLowerCase();
+  if (extension === '.png') return 'image/png';
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
+  if (extension === '.webp') return 'image/webp';
+  if (extension === '.gif') return 'image/gif';
+  return 'application/octet-stream';
+}
+
+function normalizeReferenceAttachments(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set();
+  return value
+    .map((attachment) => {
+      const filePath = String(attachment?.path || '').trim();
+      if (!filePath) {
+        return null;
+      }
+
+      const normalizedPath = path.resolve(filePath);
+      if (seen.has(normalizedPath)) {
+        return null;
+      }
+
+      seen.add(normalizedPath);
+      return {
+        path: normalizedPath,
+        name: String(attachment?.name || path.basename(normalizedPath)).trim() || path.basename(normalizedPath),
+        size: Number.isFinite(attachment?.size) ? attachment.size : null,
+        mimeType: inferImageMimeType(normalizedPath),
+      };
+    })
+    .filter(Boolean);
+}
+
 function formatRetrievedChunksForPrompt(result) {
   if (!result || !Array.isArray(result.results) || result.results.length === 0) {
     return '';
@@ -748,6 +787,7 @@ function normalizePromptHistory(value) {
       const provider = String(entry?.provider || '').trim() || 'openai';
       const model = String(entry?.model || '').trim();
       const timestamp = String(entry?.timestamp || '').trim();
+      const attachments = normalizeReferenceAttachments(entry?.attachments);
 
       if (!prompt && !summary) {
         return null;
@@ -759,6 +799,7 @@ function normalizePromptHistory(value) {
         provider,
         model,
         timestamp,
+        attachments,
       };
     })
     .filter(Boolean)
@@ -779,6 +820,10 @@ function formatConversationHistoryForPrompt(history) {
       lines.push(`Outcome:\n${entry.summary}`);
     }
 
+    if (Array.isArray(entry.attachments) && entry.attachments.length) {
+      lines.push(`Reference images: ${entry.attachments.map((attachment) => attachment.name || path.basename(attachment.path)).join(', ')}`);
+    }
+
     if (entry.provider || entry.model) {
       lines.push(`Provider/model: ${entry.provider}${entry.model ? ` / ${entry.model}` : ''}`);
     }
@@ -789,6 +834,32 @@ function formatConversationHistoryForPrompt(history) {
 
     return lines.join('\n');
   }).join('\n\n');
+}
+
+async function validateReferenceAttachments(attachments) {
+  const normalized = normalizeReferenceAttachments(attachments);
+  const valid = [];
+
+  for (const attachment of normalized) {
+    let stats;
+    try {
+      stats = await fs.stat(attachment.path);
+    } catch {
+      throw new Error(`Reference image not found: ${attachment.path}`);
+    }
+
+    if (!stats.isFile()) {
+      throw new Error(`Reference image is not a file: ${attachment.path}`);
+    }
+
+    valid.push({
+      ...attachment,
+      size: stats.size,
+      mimeType: inferImageMimeType(attachment.path),
+    });
+  }
+
+  return valid;
 }
 
 function formatNumberList(values) {
@@ -961,6 +1032,7 @@ async function runInAppPrompt(options = {}) {
   const progress = (type, message, extra) => sendAgentRunProgress(progressRequestId, type, message, extra);
   const provider = normalizePromptProvider(options.provider);
   const prompt = String(options.prompt || '').trim();
+  const attachments = await validateReferenceAttachments(options.attachments);
   const userContext = String(options.context || '').trim();
   const apiKey = String(
     options.apiKey || (provider === 'gemini' ? process.env.GEMINI_API_KEY : process.env.OPENAI_API_KEY) || ''
@@ -988,6 +1060,9 @@ async function runInAppPrompt(options = {}) {
   }
 
   progress('status', 'Preparing direct Blender prompt run.');
+  if (attachments.length) {
+    progress('status', `Loaded ${attachments.length} reference image(s).`);
+  }
 
   let ragResult = null;
   let ragContext = '';
@@ -1058,6 +1133,7 @@ async function runInAppPrompt(options = {}) {
     try {
       code = await generateCode({
         description: prompt,
+        attachments,
         context: attemptContext,
         conversationHistory: historyContext,
         sceneSnapshot: sceneSnapshotContext,
@@ -1177,6 +1253,8 @@ async function runInAppPrompt(options = {}) {
     provider,
     prompt,
     model,
+    attachments,
+    attachmentCount: attachments.length,
     code,
     contextUsed: userContext,
     ragResult,
@@ -1204,6 +1282,7 @@ function buildCodexAgentPrompt({
   prompt,
   userContext,
   historyContext,
+  attachments,
 }) {
   return [
     'You are running from Blender MCP Launcher as a non-interactive Codex CLI agent.',
@@ -1211,6 +1290,9 @@ function buildCodexAgentPrompt({
     'Keep the final response concise and include the important files, commands, or Blender result details.',
     historyContext ? `Conversation history:\n${historyContext}` : '',
     userContext ? `Extra context:\n${userContext}` : '',
+    Array.isArray(attachments) && attachments.length
+      ? `Reference images are attached to the initial prompt:\n${attachments.map((attachment) => `- ${attachment.name}`).join('\n')}`
+      : '',
     `User request:\n${prompt}`,
   ].filter(Boolean).join('\n\n');
 }
@@ -1219,6 +1301,7 @@ async function runCodexAgentPrompt(options = {}) {
   const progressRequestId = String(options.requestId || '').trim();
   const progress = (type, message, extra) => sendAgentRunProgress(progressRequestId, type, message, extra);
   const prompt = String(options.prompt || '').trim();
+  const attachments = await validateReferenceAttachments(options.attachments);
   const userContext = String(options.context || '').trim();
   const useHistory = options.useHistory !== false;
   const conversationHistory = useHistory ? normalizePromptHistory(options.history) : [];
@@ -1257,16 +1340,23 @@ async function runCodexAgentPrompt(options = {}) {
     args.push('-m', model);
   }
 
+  for (const attachment of attachments) {
+    args.push('-i', attachment.path);
+  }
+
   args.push('-');
 
   sendLog(`Codex agent run started (model=${model || 'config default'}, sandbox=${sandbox}, approval=${approval}).`);
   progress('status', 'Starting Codex CLI run.');
+  if (attachments.length) {
+    progress('status', `Attached ${attachments.length} reference image(s) for Codex.`);
+  }
 
   let codexLineBuffer = '';
   const commandResult = await runCommandWithInput(
     codexProbe.codexPath,
     args,
-    buildCodexAgentPrompt({ prompt, userContext, historyContext }),
+    buildCodexAgentPrompt({ prompt, userContext, historyContext, attachments }),
     {
       cwd: repoRoot,
       env: codexEnv,
@@ -1306,6 +1396,7 @@ async function runCodexAgentPrompt(options = {}) {
     sandbox,
     approval,
     historyCount: conversationHistory.length,
+    attachmentCount: attachments.length,
     outputPath,
     finalMessage,
     stdout: commandResult.stdout || '',
@@ -1320,6 +1411,7 @@ function buildClaudeAgentPrompt({
   prompt,
   userContext,
   historyContext,
+  attachments,
 }) {
   return [
     'You are running from Blender MCP Launcher as a non-interactive Claude Code CLI agent.',
@@ -1327,6 +1419,9 @@ function buildClaudeAgentPrompt({
     'Keep the final response concise and include the important files, commands, or Blender result details.',
     historyContext ? `Conversation history:\n${historyContext}` : '',
     userContext ? `Extra context:\n${userContext}` : '',
+    Array.isArray(attachments) && attachments.length
+      ? `Reference image files are available locally and should be inspected when relevant:\n${attachments.map((attachment) => `- ${attachment.path}`).join('\n')}`
+      : '',
     `User request:\n${prompt}`,
   ].filter(Boolean).join('\n\n');
 }
@@ -1454,6 +1549,7 @@ async function runClaudeAgentPrompt(options = {}) {
   const progressRequestId = String(options.requestId || '').trim();
   const progress = (type, message, extra) => sendAgentRunProgress(progressRequestId, type, message, extra);
   const prompt = String(options.prompt || '').trim();
+  const attachments = await validateReferenceAttachments(options.attachments);
   const userContext = String(options.context || '').trim();
   const useHistory = options.useHistory !== false;
   const conversationHistory = useHistory ? normalizePromptHistory(options.history) : [];
@@ -1489,15 +1585,23 @@ async function runClaudeAgentPrompt(options = {}) {
     args.push('--allowedTools', blenderClaudeAllowedTools().join(','));
   }
 
+  const attachmentDirs = [...new Set(attachments.map((attachment) => path.dirname(attachment.path)))];
+  for (const attachmentDir of attachmentDirs) {
+    args.push('--add-dir', attachmentDir);
+  }
+
   sendLog(`Claude Code agent run started (model=${model || 'config default'}, permission=${permissionMode}, blender_tools=${allowBlenderTools ? 'allowed' : 'default'}).`);
   progress('status', 'Starting Claude Code CLI run.');
+  if (attachments.length) {
+    progress('status', `Shared ${attachments.length} local reference image(s) with Claude Code.`);
+  }
 
   let claudeLineBuffer = '';
   let finalMessage = '';
   const commandResult = await runCommandWithInput(
     claudeProbe.claudePath,
     args,
-    buildClaudeAgentPrompt({ prompt, userContext, historyContext }),
+    buildClaudeAgentPrompt({ prompt, userContext, historyContext, attachments }),
     {
       cwd: repoRoot,
       env: claudeEnv,
@@ -1555,6 +1659,7 @@ async function runClaudeAgentPrompt(options = {}) {
     permissionMode,
     allowBlenderTools,
     historyCount: conversationHistory.length,
+    attachmentCount: attachments.length,
     finalMessage,
     stdout: commandResult.stdout || '',
     stderr: commandResult.stderr || '',
@@ -2057,6 +2162,35 @@ async function listTmpFiles() {
   return files;
 }
 
+async function pickReferenceImages() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return [];
+  }
+
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'Add reference images',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      {
+        name: 'Images',
+        extensions: referenceImageExtensions,
+      },
+    ],
+  });
+
+  if (canceled || !Array.isArray(filePaths) || !filePaths.length) {
+    return [];
+  }
+
+  const attachments = await validateReferenceAttachments(filePaths.map((filePath) => ({ path: filePath })));
+  return attachments.map((attachment) => ({
+    path: attachment.path,
+    name: attachment.name,
+    size: attachment.size,
+    mimeType: attachment.mimeType,
+  }));
+}
+
 async function readTmpFile(filePath) {
   const safePath = ensureTmpPath(filePath);
   const stats = await fs.stat(safePath);
@@ -2259,6 +2393,7 @@ ipcMain.handle('tmp:list-files', async () => listTmpFiles());
 ipcMain.handle('tmp:read-file', async (_event, filePath) => readTmpFile(filePath));
 ipcMain.handle('tmp:reset-result', async () => resetBlenderResultFile());
 ipcMain.handle('tmp:fetch-snapshot', async () => fetchLiveSceneSnapshot());
+ipcMain.handle('attachments:pick-reference-images', async () => pickReferenceImages());
 ipcMain.handle('prompt:run', async (_event, options = {}) => runInAppPrompt(options));
 ipcMain.handle('agent:codex-run', async (_event, options = {}) => runCodexAgentPrompt(options));
 ipcMain.handle('agent:claude-run', async (_event, options = {}) => runClaudeAgentPrompt(options));

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { SlidersHorizontal, X } from 'lucide-react';
+import { Paperclip, SlidersHorizontal, X } from 'lucide-react';
 import {
   defaultPromptModel,
+  formatReferenceAttachmentLabel,
   formatClaudeRunResult,
   formatCodexRunResult,
   formatPromptAttemptDetails,
@@ -119,6 +120,16 @@ function ChatMessageList({ promptConversation, onUseSamplePrompt }) {
               <strong>You</strong>
               <span>{formatPromptHistoryTimestamp(entry.timestamp)}</span>
             </div>
+            {Array.isArray(entry.attachments) && entry.attachments.length > 0 && (
+              <div className="chat-attachment-list">
+                {entry.attachments.map((attachment, index) => (
+                  <span className="chat-attachment-chip" key={`${attachment.path || attachment.name || 'attachment'}-${index}`}>
+                    <Paperclip size={12} aria-hidden="true" />
+                    <span>{formatReferenceAttachmentLabel(attachment)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
             <pre>{entry.prompt}</pre>
           </div>
           <div className={`chat-message assistant ${entry.status || 'done'}`}>
@@ -196,6 +207,7 @@ export function ChatWorkspace({
     promptResultRaw,
     promptAttemptTrace,
     promptConversation,
+    promptAttachments,
   } = promptState;
 
   const {
@@ -225,6 +237,7 @@ export function ChatWorkspace({
     setPromptResultRaw,
     setPromptAttemptTrace,
     setPromptConversation,
+    setPromptAttachments,
   } = promptActions;
 
   const isCodexRunner = promptRunner === 'codex';
@@ -308,6 +321,22 @@ export function ChatWorkspace({
 
     const requestId = `prompt-${Date.now()}`;
     const timestamp = new Date().toISOString();
+    const attachments = Array.isArray(promptAttachments)
+      ? promptAttachments
+        .map((attachment) => {
+          const filePath = String(attachment?.path || '').trim();
+          if (!filePath) {
+            return null;
+          }
+
+          return {
+            path: filePath,
+            name: formatReferenceAttachmentLabel(attachment),
+            size: Number.isFinite(attachment?.size) ? attachment.size : null,
+          };
+        })
+        .filter(Boolean)
+      : [];
 
     setPromptAttemptTrace([]);
     setPromptCode('');
@@ -330,6 +359,7 @@ export function ChatWorkspace({
         provider: isCodexRunner ? 'codex' : (isClaudeRunner ? 'claude' : promptProvider),
         model: isCodexRunner ? (codexModel || 'config default') : (isClaudeRunner ? (claudeModel || 'config default') : promptModel),
         timestamp,
+        attachments,
         status: 'running',
         summary: pendingSummary,
         progressEvents: [
@@ -343,12 +373,14 @@ export function ChatWorkspace({
       },
     ].slice(-8));
     setPromptText('');
+    setPromptAttachments([]);
 
     try {
       const result = isCodexRunner
         ? await api.runCodexPrompt({
           requestId,
           prompt: trimmedPrompt,
+          attachments,
           context: promptContext,
           model: codexModel,
           sandbox: codexSandbox,
@@ -360,6 +392,7 @@ export function ChatWorkspace({
           ? await api.runClaudePrompt({
             requestId,
             prompt: trimmedPrompt,
+            attachments,
             context: promptContext,
             model: claudeModel,
             permissionMode: claudePermissionMode,
@@ -371,6 +404,7 @@ export function ChatWorkspace({
             requestId,
             provider: promptProvider,
             prompt: trimmedPrompt,
+            attachments,
             context: promptContext,
             apiKey: promptApiKey,
             model: promptModel,
@@ -473,6 +507,50 @@ export function ChatWorkspace({
     setPromptStatus('In-app prompt conversation cleared for this launcher session.');
   };
 
+  const handlePickAttachments = async () => {
+    if (typeof api.pickReferenceImages !== 'function') {
+      setPromptStatus('Reference image picker is not available in this launcher build.');
+      return;
+    }
+
+    try {
+      const picked = await api.pickReferenceImages();
+      if (!Array.isArray(picked) || !picked.length) {
+        return;
+      }
+
+      let addedCount = 0;
+      setPromptAttachments((current) => {
+        const seen = new Set(current.map((attachment) => attachment.path));
+        const next = [...current];
+        for (const attachment of picked) {
+          const filePath = String(attachment?.path || '').trim();
+          if (!filePath || seen.has(filePath)) {
+            continue;
+          }
+
+          seen.add(filePath);
+          addedCount += 1;
+          next.push({
+            path: filePath,
+            name: formatReferenceAttachmentLabel(attachment),
+            size: Number.isFinite(attachment?.size) ? attachment.size : null,
+          });
+        }
+        return next;
+      });
+      setPromptStatus(addedCount
+        ? `Added ${addedCount} reference image(s) to the next prompt.`
+        : 'Those reference images were already attached to the next prompt.');
+    } catch (error) {
+      setPromptStatus(`Reference image picker failed: ${String(error.message || error)}`);
+    }
+  };
+
+  const handleRemoveAttachment = (attachmentPath) => {
+    setPromptAttachments((current) => current.filter((attachment) => attachment.path !== attachmentPath));
+  };
+
   const handleComposerKeyDown = (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -513,6 +591,24 @@ export function ChatWorkspace({
             onUseSamplePrompt={() => setPromptText(SAMPLE_BLENDER_PROMPT)}
           />
           <div className="chat-composer">
+            {promptAttachments.length > 0 && (
+              <div className="chat-composer-attachments">
+                {promptAttachments.map((attachment) => (
+                  <span className="chat-attachment-chip composer" key={attachment.path}>
+                    <Paperclip size={12} aria-hidden="true" />
+                    <span>{formatReferenceAttachmentLabel(attachment)}</span>
+                    <button
+                      className="ghost chat-attachment-remove"
+                      aria-label={`Remove ${formatReferenceAttachmentLabel(attachment)}`}
+                      onClick={() => handleRemoveAttachment(attachment.path)}
+                      type="button"
+                    >
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <label>
               Blender prompt
               <textarea
@@ -524,14 +620,25 @@ export function ChatWorkspace({
               />
             </label>
             <div className="chat-composer-actions">
-              <button
-                className="ghost chat-agent-button"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <SlidersHorizontal size={16} aria-hidden="true" />
-                <span>{activeAgentLabel}</span>
-              </button>
-              <span>{promptUseHistory ? `${promptConversation.length} turn(s) in context` : 'History off'}</span>
+              <div className="chat-composer-meta">
+                <button
+                  className="ghost"
+                  onClick={handlePickAttachments}
+                  type="button"
+                >
+                  <Paperclip size={16} aria-hidden="true" />
+                  <span>Add reference</span>
+                </button>
+                <button
+                  className="ghost chat-agent-button"
+                  onClick={() => setSettingsOpen(true)}
+                  type="button"
+                >
+                  <SlidersHorizontal size={16} aria-hidden="true" />
+                  <span>{activeAgentLabel}</span>
+                </button>
+                <span>{promptUseHistory ? `${promptConversation.length} turn(s) in context` : 'History off'}</span>
+              </div>
               <button
                 disabled={!canRunPrompt || !promptText.trim() || Boolean(busy.runPrompt)}
                 onClick={handleRunPrompt}

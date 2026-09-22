@@ -34,6 +34,7 @@ export function usePromptWorkspace() {
   const [promptResultRaw, setPromptResultRaw] = useState('');
   const [promptAttemptTrace, setPromptAttemptTrace] = useState([]);
   const [promptConversation, setPromptConversation] = useState([]);
+  const [promptAttachments, setPromptAttachments] = useState([]);
 
   const selectedPromptProfile = useMemo(
     () => promptProfiles.find((profile) => profile.id === selectedPromptProfileId) || null,
@@ -127,6 +128,7 @@ export function usePromptWorkspace() {
       promptResultRaw,
       promptAttemptTrace,
       promptConversation,
+      promptAttachments,
     },
     promptActions: {
       setPromptRunner,
@@ -155,6 +157,7 @@ export function usePromptWorkspace() {
       setPromptResultRaw,
       setPromptAttemptTrace,
       setPromptConversation,
+      setPromptAttachments,
     },
     applyPromptProfile,
     buildPromptProfile,

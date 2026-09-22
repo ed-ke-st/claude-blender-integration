@@ -1,5 +1,20 @@
 const PROMPT_PROFILES_KEY = 'blenderMcpLauncher.promptProfiles.v1';
 
+export function formatReferenceAttachmentLabel(attachment) {
+  const name = String(attachment?.name || '').trim();
+  if (name) {
+    return name;
+  }
+
+  const filePath = String(attachment?.path || '').trim();
+  if (!filePath) {
+    return 'Reference image';
+  }
+
+  const segments = filePath.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] || filePath;
+}
+
 export function normalizePromptProvider(value) {
   return value === 'gemini' ? 'gemini' : 'openai';
 }
@@ -33,11 +48,13 @@ export function formatPromptRunResult(result) {
   const ragMatches = Array.isArray(result.ragResult?.results) ? result.ragResult.results.length : 0;
   const historyCount = Number.isFinite(result.historyCount) ? result.historyCount : 0;
   const sceneObjectCount = Number.isFinite(result.sceneObjectCount) ? result.sceneObjectCount : 0;
+  const attachmentCount = Number.isFinite(result.attachmentCount) ? result.attachmentCount : 0;
 
   return [
     'In-app prompt finished.',
     `Provider: ${result.provider || '(unknown)'}`,
     `Model: ${result.model || '(unknown)'}`,
+    `Reference images: ${attachmentCount || 'off'}`,
     `Execution mode: ${result.agentMode ? `agent loop (${attemptsUsed}/${result.maxAttempts || 1} attempt(s))` : 'single pass'}`,
     result.agentMode ? `Agent outcome: ${result.agentOutcome || '(unknown)'}` : null,
     `Request ID: ${result.requestId || '(unknown)'}`,
@@ -71,6 +88,7 @@ export function formatCodexRunResult(result) {
     `Model: ${result.model || 'config default'}`,
     `Sandbox: ${result.sandbox || '(unknown)'}`,
     `Approval: ${result.approval || '(unknown)'}`,
+    `Reference images: ${result.attachmentCount ? result.attachmentCount : 'off'}`,
     `Conversation history: ${result.historyCount ? `${result.historyCount} prior turn(s)` : 'off'}`,
     result.outputPath ? `Final message file: ${result.outputPath}` : null,
     result.finalMessage || result.stderr || result.stdout || null,
@@ -87,6 +105,7 @@ export function formatClaudeRunResult(result) {
     `Model: ${result.model || 'config default'}`,
     `Permission mode: ${result.permissionMode || '(unknown)'}`,
     `Blender MCP tools: ${result.allowBlenderTools ? 'pre-approved' : 'default Claude permissions'}`,
+    `Reference images: ${result.attachmentCount ? result.attachmentCount : 'off'}`,
     `Conversation history: ${result.historyCount ? `${result.historyCount} prior turn(s)` : 'off'}`,
     result.finalMessage || result.stderr || result.stdout || null,
   ].filter(Boolean).join('\n');

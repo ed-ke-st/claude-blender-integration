@@ -659,6 +659,47 @@ select {
   color: #334155;
 }
 
+.chat-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  padding: 0.3rem 0.55rem;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.chat-attachment-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.chat-attachment-chip.composer {
+  max-width: 100%;
+}
+
+.chat-attachment-remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .chat-message-note {
   color: #075985;
   font-size: 13px;
@@ -777,6 +818,12 @@ select {
   gap: 0.75rem;
 }
 
+.chat-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .chat-composer textarea {
   min-height: 84px;
 }
@@ -788,7 +835,15 @@ select {
   gap: 12px;
 }
 
-.chat-composer-actions span {
+.chat-composer-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.chat-composer-meta > span {
   color: var(--muted);
   font-size: 12px;
 }
