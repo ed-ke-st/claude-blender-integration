@@ -15,8 +15,10 @@ import {
   DEFAULT_WATCH_FILE,
   RESULT_FILE,
   executeCreateInBlender,
+  readBlenderResult,
   waitForFreshResult,
 } from "./blender-exec.js";
+import { orchestrateTask } from "./agents/director.js";
 
 function createServer() {
   const server = new Server(
@@ -117,6 +119,28 @@ function createServer() {
                   "Optional. When true, trigger a fresh Blender snapshot probe before reading result.",
               },
             },
+          },
+        },
+        {
+          name: "orchestrate_blender_task",
+          description:
+            "Opt-in, read-only first-slice subagent orchestration. The director classifies the task, " +
+            "uses an isolated Scene Inspector only when useful, and returns a compact structured plan. " +
+            "It never mutates Blender; use existing deterministic MCP tools for execution.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: {
+                type: "string",
+                description: "The Blender task to classify and plan.",
+              },
+              scene_snapshot: {
+                type: "object",
+                description:
+                  "Optional result JSON from get_blender_result. When omitted, the server reads its latest local Blender result.",
+              },
+            },
+            required: ["task"],
           },
         },
         {
@@ -343,6 +367,33 @@ function createServer() {
                   "Run `cd mcp-server && npm run rag:index` to build the local store.",
               },
             ],
+            isError: true,
+          };
+        }
+      }
+
+      case "orchestrate_blender_task": {
+        try {
+          let sceneSnapshot = args.scene_snapshot;
+          if (!sceneSnapshot || typeof sceneSnapshot !== "object" || Array.isArray(sceneSnapshot)) {
+            try {
+              const latest = await readBlenderResult();
+              sceneSnapshot = latest.result || {};
+            } catch {
+              sceneSnapshot = {};
+            }
+          }
+          const result = await orchestrateTask({
+            userTask: args.task,
+            sceneSnapshot,
+          });
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            isError: result.status === "failed",
+          };
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: `✗ Orchestration failed: ${error.message}` }],
             isError: true,
           };
         }

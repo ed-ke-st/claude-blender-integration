@@ -151,6 +151,11 @@ OPENAI_API_KEY=sk-... npm run openai:generate -- "Create a spiral staircase" --c
 - `ALLOWED_ORIGINS`: Optional comma-separated origin allow-list
 - `BLENDER_WATCH_FILE`: Auto-execute file path (default `/tmp/blender_claude_execute.py`)
 - `OPENAI_MODEL`: Default model for `openai-bridge.js` (default `gpt-4.1-mini`)
+- `SUBAGENTS_ENABLED`: Enables the opt-in orchestration tool (default `true`)
+- `SUBAGENT_MAX_CALLS`, `SUBAGENT_MAX_ITERATIONS`, `SUBAGENT_CONCURRENCY`: Bounded orchestration limits
+- `AGENT_MODEL_CHEAP`, `AGENT_MODEL_STANDARD`, `AGENT_MODEL_STRONG`, `AGENT_MODEL_VISION`: Provider-neutral model-class mappings
+- `SUBAGENT_DEBUG_LOGGING`, `SUBAGENT_USAGE_LOGGING`: Enable concise structured orchestration diagnostics
+- `SUBAGENT_EXECUTION_MODE`: `host` (default; no server-side model/API call) or `api` (optional OpenAI-backed inspection)
 
 ## Usage from Blender
 
@@ -168,6 +173,23 @@ The Blender addon watches per-source files by default:
 - **retrieve_context** - Retrieve top matching repository context chunks from local RAG store
 - **explain_blender_code** - Explain or improve Blender Python code
 - **debug_blender_error** - Help debug Blender Python errors
+- **orchestrate_blender_task** - Opt-in read-only task classification and compact Scene Inspector report; it does not mutate Blender in this first slice
+
+## Subagent orchestration (first slice)
+
+`orchestrate_blender_task` keeps Blender MCP model-agnostic. It classifies a
+request first: explicit deterministic requests bypass specialists, while an
+ambiguous planning request receives an isolated compact scene packet through a
+read-only Scene Inspector. The result is structured JSON suitable for a
+director to turn into validated operations later.
+
+The default `host` mode is designed for Codex and Claude subscription users:
+the connected client acts as director, receives a `hostBrief`, and calls the
+existing MCP tools. It makes no server-side model request and needs no API key.
+The initial slice is deliberately propose-only: specialists cannot execute
+Blender code, and existing direct MCP tools remain the only mutation path. Set
+`SUBAGENT_EXECUTION_MODE=api` plus `AGENT_MODEL_CHEAP` and `OPENAI_API_KEY`
+only when you intentionally want unattended, server-side OpenAI inspection.
 
 ## Development
 

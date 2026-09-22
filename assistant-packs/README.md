@@ -11,6 +11,11 @@ This folder ships reusable assistant templates so users can get better Blender r
 - `copilot/agents/` - Copilot CLI custom agents (`*.agent.md`) for `~/.copilot/agents`
 - `chatgpt/` - ChatGPT project/custom-instruction templates
 
+The `blender-orchestration` skills make Codex or Claude the subscription-hosted
+director. They use Blender MCP for compact scene reports and deterministic
+execution, so the server does not require an API key unless API mode is
+explicitly enabled for unattended use.
+
 ## Quick install
 
 From repo root:

@@ -8,6 +8,7 @@
     "start": "node index.js",
     "start:stdio": "MCP_TRANSPORT=stdio node index.js",
     "start:http": "MCP_TRANSPORT=http node index.js",
+    "test": "node --test",
     "openai:generate": "node openai-bridge.js generate",
     "smoke:tools": "node scripts/smoke-tools.js",
     "rag:index": "node rag/cli.js index",
