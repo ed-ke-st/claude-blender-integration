@@ -13,6 +13,10 @@ AI-powered 3D modeling in Blender using Claude, Codex, Gemini CLI, Copilot CLI, 
 - 📁 **Auto-Organization**: All generated objects go into a dedicated collection
 - 🐛 **Error Handling**: View and copy errors easily for debugging
 - 🎬 **Supports Everything**: Meshes, curves, cameras, animations, materials, and more
+- 🧭 **Host-Driven Orchestration**: Codex or Claude subscription sessions can plan scene-aware work without a server-side API key
+- 🔍 **Compact Scene Reports**: Read-only Scene Inspector and Material Specialist reports keep planning context small and isolated
+- 🖼️ **Render Preview Loop**: Render the active scene through MCP and return a PNG for host-side visual critique
+- 📎 **Reference Images**: Attach image references in the desktop launcher for OpenAI, Gemini, Codex CLI, or Claude Code workflows
 
 ## Mac Desktop App (Beta)
 
@@ -95,6 +99,39 @@ Blender: *creates the object automatically*
 2. Your assistant uses MCP tools to write Python code to a watched file
 3. Blender detects the file change and executes it automatically
 4. Object appears in your scene!
+
+## Host-Driven Orchestration
+
+For ambiguous, multi-step, or look-development tasks, use the connected Codex
+or Claude session as the director and keep Blender MCP focused on inspection and
+execution. This is the default configuration and does **not** require an API
+key.
+
+```text
+User request
+    ↓
+Codex or Claude subscription host (director)
+    ↓
+Scene Inspector / Material Specialist (read-only, compact reports)
+    ↓
+One approved deterministic Blender operation
+    ↓
+Render preview → host-side visual critique
+```
+
+Useful MCP tools in this workflow:
+
+- `orchestrate_blender_task` — returns a compact host brief; material requests
+  also include a propose-only Material Specialist report.
+- `get_blender_result` with `refresh: true` — obtains a fresh scene snapshot,
+  including materials, lights, cameras, and render settings.
+- `render_blender_preview` — renders a fixed temporary PNG and returns it to
+  the host without changing the scene's configured output path.
+
+The specialist reports never mutate Blender. The host must explicitly choose
+and execute the next operation through the normal MCP tools. See
+[mcp-server/README.md](mcp-server/README.md) for configuration and the full tool
+reference.
 
 ## Installation
 
@@ -448,6 +485,7 @@ The addon includes some built-in operators:
 ```
 claude-blender-integration/
 ├── README.md                          # This file
+├── CHANGELOG.md                       # Release notes
 ├── LICENSE                            # MIT License
 ├── blender-addon/
 │   └── claude_modeling_tools.py      # Blender addon
@@ -463,7 +501,7 @@ claude-blender-integration/
 
 The Model Context Protocol (MCP) server acts as a bridge between Claude/ChatGPT and Blender:
 
-1. Provides tools to the model host (`create_in_blender`, `delete_in_blender`, `get_blender_result`, etc.)
+1. Provides tools to the model host (`create_in_blender`, `delete_in_blender`, `get_blender_result`, `orchestrate_blender_task`, `render_blender_preview`, etc.)
 2. MCP writes generated execution code to `/tmp/blender_claude_execute.py` by default (or `BLENDER_WATCH_FILE`)
 3. Formats prompts specifically for Blender Python code generation
 
@@ -517,14 +555,7 @@ Built with:
 
 ## Changelog
 
-### v1.0.0 (2025-02-18)
-
-- Initial release
-- Auto-execution via MCP server
-- Lock/preserve system
-- Collection management
-- Error handling with copyable text display
-- Support for meshes, curves, cameras, animations, materials
+Release notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
