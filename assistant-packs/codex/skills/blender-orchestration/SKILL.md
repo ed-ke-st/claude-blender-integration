@@ -13,6 +13,8 @@ inspection boundary; it does not need an API key for this workflow.
 1. For an ambiguous, scene-aware, or multi-step request, call
    `orchestrate_blender_task` with the user task. Treat its `hostBrief` as the
    only scene context needed for initial planning.
+   For material/look-development tasks, use its `materialSpecialistReport` and
+   `isolatedMaterialContext` when present.
 2. Decide whether direct deterministic execution is enough. Do not create
    subagents merely to move, align, duplicate, name, or otherwise perform an
    explicit exact operation.
@@ -21,8 +23,10 @@ inspection boundary; it does not need an API key for this workflow.
    serial execution path.
 4. Use existing Blender MCP mutation tools only after deciding on the plan.
    Never give a specialist arbitrary Blender mutation authority.
-5. Call `get_blender_result` after mutation and make at most one targeted
-   correction unless the user asks for more iteration.
+5. For visual or look-development work, call `render_blender_preview` after
+   mutation and inspect the returned image against the user intent. Make at
+   most one targeted correction unless the user asks for more iteration.
+6. Call `get_blender_result` after mutation and report verification.
 
 ## Host context and safety
 

@@ -24,7 +24,7 @@ export function loadSubagentConfig(env = process.env) {
 
   return {
     enabled: boolean(env.SUBAGENTS_ENABLED, true),
-    maxCalls: positiveInteger(env.SUBAGENT_MAX_CALLS, 1),
+    maxCalls: positiveInteger(env.SUBAGENT_MAX_CALLS, 2),
     maxIterations: positiveInteger(env.SUBAGENT_MAX_ITERATIONS, 1),
     concurrency: positiveInteger(env.SUBAGENT_CONCURRENCY, 1),
     mutationPolicy: String(env.SUBAGENT_MUTATION_POLICY || "director-approved"),

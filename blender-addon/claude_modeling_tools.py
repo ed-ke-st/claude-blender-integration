@@ -260,7 +260,86 @@ def _obj_info(obj):
     if obj.type == 'MESH' and obj.data:
         info["vertices"] = len(obj.data.vertices)
         info["faces"] = len(obj.data.polygons)
+        info["materials"] = [
+            slot.material.name if slot.material else None
+            for slot in obj.material_slots
+        ]
     return info
+
+
+def _socket_value(node, name):
+    """Return a JSON-safe default value from a shader node socket."""
+    socket = node.inputs.get(name) if node and getattr(node, "inputs", None) else None
+    if socket is None:
+        return None
+    value = getattr(socket, "default_value", None)
+    if hasattr(value, "__len__") and not isinstance(value, str):
+        return [round(float(item), 4) for item in value]
+    if isinstance(value, (int, float)):
+        return round(float(value), 4)
+    return None
+
+
+def _material_info(material):
+    """Return the small, stable material subset useful for agent planning."""
+    info = {
+        "name": material.name,
+        "use_nodes": bool(material.use_nodes),
+        "node_types": [],
+    }
+    if not material.use_nodes or not material.node_tree:
+        return info
+
+    nodes = list(material.node_tree.nodes)
+    info["node_types"] = sorted({node.bl_idname for node in nodes})[:30]
+    principled = next((node for node in nodes if node.bl_idname == "ShaderNodeBsdfPrincipled"), None)
+    if principled:
+        info["principled"] = {
+            "base_color": _socket_value(principled, "Base Color"),
+            "metallic": _socket_value(principled, "Metallic"),
+            "roughness": _socket_value(principled, "Roughness"),
+            "ior": _socket_value(principled, "IOR"),
+            "alpha": _socket_value(principled, "Alpha"),
+        }
+    return info
+
+
+def _light_info(obj):
+    data = obj.data
+    return {
+        "name": obj.name,
+        "type": getattr(data, "type", "UNKNOWN"),
+        "location": [round(v, 4) for v in obj.location],
+        "energy": round(float(getattr(data, "energy", 0.0)), 4),
+        "color": [round(float(v), 4) for v in getattr(data, "color", (1.0, 1.0, 1.0))],
+    }
+
+
+def _camera_info(obj):
+    data = obj.data
+    return {
+        "name": obj.name,
+        "location": [round(v, 4) for v in obj.location],
+        "lens": round(float(getattr(data, "lens", 0.0)), 4),
+        "clip_start": round(float(getattr(data, "clip_start", 0.0)), 4),
+        "clip_end": round(float(getattr(data, "clip_end", 0.0)), 4),
+    }
+
+
+def _render_info(scene):
+    render = scene.render if scene else None
+    if not render:
+        return {}
+    result = {
+        "engine": getattr(scene, "render", None) and getattr(scene.render, "engine", None),
+        "resolution": [int(render.resolution_x), int(render.resolution_y)],
+        "resolution_percentage": int(render.resolution_percentage),
+        "film_transparent": bool(getattr(render, "film_transparent", False)),
+    }
+    last_output_path = scene.get("claude_last_render_path", "")
+    if isinstance(last_output_path, str) and last_output_path:
+        result["last_output_path"] = last_output_path
+    return result
 
 
 def write_result(status, message, created=None, model_name=None, code=None):
@@ -297,6 +376,10 @@ def write_result(status, message, created=None, model_name=None, code=None):
         "objects_created": created or [],
         "scene_objects": [_obj_info(o) for o in bpy.data.objects],
         "collections": [c.name for c in bpy.data.collections],
+        "materials": [_material_info(material) for material in bpy.data.materials],
+        "lights": [_light_info(obj) for obj in bpy.data.objects if obj.type == "LIGHT"],
+        "cameras": [_camera_info(obj) for obj in bpy.data.objects if obj.type == "CAMERA"],
+        "render_settings": _render_info(scene),
         "generation_rules_version": contract["generation_rules_version"],
         "scene_conventions": contract["scene_conventions"],
         "uv_conventions": contract["uv_conventions"],

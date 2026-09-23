@@ -16,6 +16,24 @@ export function validateOperation(operation) {
   if (typeof operation.reason !== "string" || !operation.reason.trim()) {
     return { valid: false, error: "Operation reason must be a non-empty string." };
   }
+  if (operation.operation === "set_material_properties") {
+    const parameters = operation.parameters;
+    const numericProperties = ["metallic", "roughness", "ior", "alpha"];
+    for (const property of numericProperties) {
+      if (parameters[property] !== undefined && !Number.isFinite(parameters[property])) {
+        return { valid: false, error: `Material property ${property} must be a finite number.` };
+      }
+    }
+    if (parameters.baseColor !== undefined) {
+      const color = parameters.baseColor;
+      if (!Array.isArray(color) || ![3, 4].includes(color.length) || color.some((value) => !Number.isFinite(value))) {
+        return { valid: false, error: "Material baseColor must be an array of 3 or 4 finite numbers." };
+      }
+    }
+    if (!numericProperties.some((property) => parameters[property] !== undefined) && parameters.baseColor === undefined) {
+      return { valid: false, error: "Material operation must specify at least one supported property." };
+    }
+  }
   return { valid: true, value: operation };
 }
 

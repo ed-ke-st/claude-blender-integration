@@ -1,11 +1,13 @@
 import { loadSubagentConfig, resolveModel } from "./config.js";
-import { createSceneContextPacket } from "./context.js";
+import { createMaterialContextPacket, createSceneContextPacket } from "./context.js";
 import { createRunRecord, finalizeRunRecord, logRun } from "./observability.js";
 import { prepareExecution } from "./execution.js";
 import { createOpenAIJsonRunner } from "./provider.js";
 import { runSceneInspector } from "./specialists/scene-inspector.js";
+import { runMaterialSpecialist } from "./specialists/materials.js";
 
 const DETERMINISTIC_PATTERN = /^(?:move|translate|rotate|scale|rename|delete|duplicate|align|space|parent|unparent|assign)\b/i;
+const MATERIAL_PATTERN = /\b(?:material|chrome|metal|metallic|roughness|glass|wood|paint|texture|colour|color|shader)\b/i;
 
 export function classifyTask(userTask) {
   const task = String(userTask || "").trim();
@@ -17,20 +19,28 @@ export function classifyTask(userTask) {
       specialists: [],
     };
   }
+  const specialists = ["scene-inspector"];
+  if (MATERIAL_PATTERN.test(task)) specialists.push("materials");
   return {
     kind: "inspect-and-plan",
     reason: "The task benefits from a compact scene summary before planning.",
-    specialists: ["scene-inspector"],
+    specialists,
   };
 }
 
-function createHostBrief({ userTask, classification, context, inspection }) {
+function createHostBrief({ userTask, classification, context, inspection, materialContext, materialInspection }) {
   return {
     role: "subscription-host-director",
     userIntent: String(userTask || ""),
     classification: classification.kind,
     sceneInspectorReport: inspection.findings,
     isolatedSceneContext: context,
+    ...(materialInspection
+      ? {
+          materialSpecialistReport: materialInspection.findings,
+          isolatedMaterialContext: materialContext,
+        }
+      : {}),
     nextActions: [
       "Use the compact Scene Inspector report to decide the smallest safe plan.",
       "Use existing deterministic Blender MCP tools for approved execution; do not grant this inspector mutation access.",
@@ -83,20 +93,43 @@ export async function orchestrateTask({ userTask, sceneSnapshot, config, runAgen
     model,
     mode: effectiveConfig.executionMode,
   });
-  const validation = prepareExecution({ operations: inspection.proposedOperations || [] });
-  record.proposedOperations = inspection.proposedOperations || [];
+  let materialContext;
+  let materialInspection;
+  if (classification.specialists.includes("materials") && record.selectedSpecialists.length < effectiveConfig.maxCalls) {
+    materialContext = createMaterialContextPacket({ userIntent: userTask, snapshot: sceneSnapshot });
+    const materialModel = resolveModel("standard", effectiveConfig);
+    record.selectedSpecialists.push("materials");
+    record.modelClasses.push({ agentId: "materials", modelClass: "standard", model: materialModel || null });
+    materialInspection = await runMaterialSpecialist({
+      context: materialContext,
+      runAgent: inspectorRunner,
+      model: materialModel,
+      mode: effectiveConfig.executionMode,
+    });
+  }
+  const proposedOperations = [
+    ...(inspection.proposedOperations || []),
+    ...(materialInspection?.proposedOperations || []),
+  ];
+  const validation = prepareExecution({ operations: proposedOperations });
+  record.proposedOperations = proposedOperations;
   record.approvedOperations = validation.valid;
   record.rejectedOperations = validation.rejected;
-  if (inspection.usage) record.usage = { "scene-inspector": inspection.usage };
+  if (inspection.usage || materialInspection?.usage) {
+    record.usage = {
+      ...(inspection.usage ? { "scene-inspector": inspection.usage } : {}),
+      ...(materialInspection?.usage ? { materials: materialInspection.usage } : {}),
+    };
+  }
   if (inspection.status === "failed") record.errors.push(inspection.summary);
 
   const result = {
     status: inspection.status === "failed" ? "partial" : "success",
     classification,
-    selectedSpecialists: ["scene-inspector"],
-    results: [inspection],
+    selectedSpecialists: record.selectedSpecialists,
+    results: [inspection, ...(materialInspection ? [materialInspection] : [])],
     ...(effectiveConfig.executionMode === "host"
-      ? { hostBrief: createHostBrief({ userTask, classification, context, inspection }) }
+      ? { hostBrief: createHostBrief({ userTask, classification, context, inspection, materialContext, materialInspection }) }
       : {}),
     proposedOperations: validation.valid,
     rejectedOperations: validation.rejected,

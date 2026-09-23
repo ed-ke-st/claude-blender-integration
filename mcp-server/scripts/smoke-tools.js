@@ -9,6 +9,7 @@ const REQUIRED_TOOLS = [
   "create_in_blender",
   "delete_in_blender",
   "get_blender_result",
+  "render_blender_preview",
   "orchestrate_blender_task",
   "explain_blender_code",
   "debug_blender_error",

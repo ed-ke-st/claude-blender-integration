@@ -174,6 +174,7 @@ The Blender addon watches per-source files by default:
 - **explain_blender_code** - Explain or improve Blender Python code
 - **debug_blender_error** - Help debug Blender Python errors
 - **orchestrate_blender_task** - Opt-in read-only task classification and compact Scene Inspector report; it does not mutate Blender in this first slice
+- **render_blender_preview** - Render the current scene to a temporary PNG and return it to the MCP host for visual review
 
 ## Subagent orchestration (first slice)
 
@@ -190,6 +191,18 @@ The initial slice is deliberately propose-only: specialists cannot execute
 Blender code, and existing direct MCP tools remain the only mutation path. Set
 `SUBAGENT_EXECUTION_MODE=api` plus `AGENT_MODEL_CHEAP` and `OPENAI_API_KEY`
 only when you intentionally want unattended, server-side OpenAI inspection.
+
+Material/look-development requests also receive a compact, propose-only Material
+Specialist report when `SUBAGENT_MAX_CALLS` is at least `2`. Fresh Blender
+snapshots now include object material assignments, Principled BSDF values, light
+and camera summaries, and render settings; no raw Blender code or conversation
+history is sent to specialists.
+
+For a subscription-hosted visual review loop, call `render_blender_preview`
+after an approved change. It renders to a fixed temporary PNG, restores the
+scene's original output-path setting, and returns the image to the connected
+host. The host performs the visual critique; the MCP server does not require a
+vision API key.
 
 ## Development
 

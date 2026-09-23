@@ -31,3 +31,19 @@ and Camera/Animation Specialist.
   orchestration MCP tool.
 - [x] Add Codex and Claude director instructions for subscription-hosted use.
 - [x] Document configuration and test host mode without an API key.
+
+## Material Specialist vertical slice
+
+- [x] Add material, light, camera, and render metadata to the read-only scene snapshot.
+- [x] Create isolated material context and a propose-only Material Specialist.
+- [x] Dynamically select Material Specialist for material/look-development tasks.
+- [x] Validate material-operation parameters and add unit coverage.
+- [x] Verify enriched snapshot and read-only Material Specialist routing against live Blender.
+
+## Render preview and host Visual Critic
+
+- [x] Add a deterministic, fixed-path render-preview MCP tool.
+- [x] Expose the most recent preview in the read-only render snapshot.
+- [x] Update subscription-host director instructions to inspect the returned preview.
+- [x] Test preview-script safety and MCP tool exposure.
+- [x] Verify the MCP scene probe and preview renderer against a live Blender scene.

@@ -19,6 +19,7 @@ import {
   waitForFreshResult,
 } from "./blender-exec.js";
 import { orchestrateTask } from "./agents/director.js";
+import { buildRenderPreviewScript, DEFAULT_RENDER_OUTPUT, readRenderPreview } from "./render-preview.js";
 
 function createServer() {
   const server = new Server(
@@ -119,6 +120,16 @@ function createServer() {
                   "Optional. When true, trigger a fresh Blender snapshot probe before reading result.",
               },
             },
+          },
+        },
+        {
+          name: "render_blender_preview",
+          description:
+            "Render the current Blender scene to a fixed temporary PNG and return it for visual review. " +
+            "Preserves the scene's configured render output path and does not change scene geometry.",
+          inputSchema: {
+            type: "object",
+            properties: {},
           },
         },
         {
@@ -394,6 +405,43 @@ function createServer() {
         } catch (error) {
           return {
             content: [{ type: "text", text: `✗ Orchestration failed: ${error.message}` }],
+            isError: true,
+          };
+        }
+      }
+
+      case "render_blender_preview": {
+        try {
+          const result = await executeCreateInBlender({
+            code: buildRenderPreviewScript(DEFAULT_RENDER_OUTPUT),
+            watchFilePath,
+          });
+          if (result.result && result.result.status !== "success") {
+            return {
+              content: [{ type: "text", text: `✗ Render preview failed in Blender: ${result.result.message || result.result.status}` }],
+              isError: true,
+            };
+          }
+          const content = [
+            {
+              type: "text",
+              text: result.pending
+                ? "✓ Render request sent to Blender. The preview is not ready yet; call render_blender_preview again after Blender completes the render."
+                : `✓ Render preview completed at ${DEFAULT_RENDER_OUTPUT}.`,
+            },
+          ];
+          if (!result.pending) {
+            try {
+              const preview = await readRenderPreview();
+              content.push({ type: "image", data: preview.data, mimeType: preview.mimeType });
+            } catch (error) {
+              content.push({ type: "text", text: `⚠ Render completed but preview could not be read: ${error.message}` });
+            }
+          }
+          return { content };
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: `✗ Render preview failed: ${error.message}` }],
             isError: true,
           };
         }

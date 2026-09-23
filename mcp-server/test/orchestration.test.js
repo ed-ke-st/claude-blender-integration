@@ -6,6 +6,7 @@ import { createSceneContextPacket } from "../agents/context.js";
 import { classifyTask, orchestrateTask } from "../agents/director.js";
 import { prepareExecution } from "../agents/execution.js";
 import { validateOperations } from "../agents/operations.js";
+import { buildRenderPreviewScript, DEFAULT_RENDER_OUTPUT } from "../render-preview.js";
 import { SUBAGENT_DEFINITIONS } from "../agents/types.js";
 
 const snapshot = {
@@ -15,6 +16,12 @@ const snapshot = {
     { name: "KeyLight", type: "LIGHT", location: [2, -2, 3], dimensions: [0, 0, 0] },
   ],
   collections: ["Gallery"],
+  materials: [{
+    name: "WallPaint",
+    use_nodes: true,
+    node_types: ["ShaderNodeBsdfPrincipled"],
+    principled: { base_color: [0.8, 0.8, 0.8, 1], metallic: 0, roughness: 0.5 },
+  }],
   last_code: "must never reach a specialist",
 };
 
@@ -23,7 +30,7 @@ function configured() {
     SUBAGENTS_ENABLED: "true",
     AGENT_MODEL_CHEAP: "test-cheap-model",
     SUBAGENT_EXECUTION_MODE: "api",
-    SUBAGENT_MAX_CALLS: "1",
+    SUBAGENT_MAX_CALLS: "2",
   });
 }
 
@@ -89,6 +96,32 @@ test("malformed or unsupported proposed operations are rejected", () => {
   assert.equal(validation.rejected.length, 2);
 });
 
+test("material operation validation rejects malformed material properties", () => {
+  const validation = validateOperations([
+    { operation: "set_material_properties", target: "WallPaint", parameters: { metallic: 1, roughness: 0.12 }, reason: "Chrome" },
+    { operation: "set_material_properties", target: "WallPaint", parameters: { baseColor: [1, 0] }, reason: "Invalid" },
+    { operation: "set_material_properties", target: "WallPaint", parameters: {}, reason: "Empty" },
+  ]);
+  assert.equal(validation.valid.length, 1);
+  assert.equal(validation.rejected.length, 2);
+});
+
+test("material requests receive an isolated propose-only material report in host mode", async () => {
+  let calls = 0;
+  const result = await orchestrateTask({
+    userTask: "Make the gallery wall material polished chrome.",
+    sceneSnapshot: snapshot,
+    config: loadSubagentConfig({ SUBAGENTS_ENABLED: "true", SUBAGENT_EXECUTION_MODE: "host", SUBAGENT_MAX_CALLS: "2" }),
+    runAgent: async () => { calls += 1; return {}; },
+  });
+  assert.equal(calls, 0);
+  assert.deepEqual(result.selectedSpecialists, ["scene-inspector", "materials"]);
+  assert.equal(result.results[1].agentId, "materials");
+  assert.equal(result.results[1].findings.materialCount, 1);
+  assert.equal("last_code" in result.hostBrief.isolatedMaterialContext, false);
+  assert.equal(result.execution.status, "not-requested");
+});
+
 test("the execution boundary never mutates an unapproved proposal", () => {
   const prepared = prepareExecution({
     operations: [{ operation: "transform_object", target: "Cube", parameters: {}, reason: "Requested" }],
@@ -121,7 +154,7 @@ test("provider-reported usage is retained without fabricating token counts", asy
 test("model routing is configurable and compact contexts cap raw inventory", () => {
   const config = loadSubagentConfig({ AGENT_MODEL_VISION: "vision-model", SUBAGENT_MAX_CALLS: "bad" });
   assert.equal(resolveModel("vision", config), "vision-model");
-  assert.equal(config.maxCalls, 1);
+  assert.equal(config.maxCalls, 2);
   const packet = createSceneContextPacket({
     userIntent: "Inspect",
     snapshot: { scene_objects: Array.from({ length: 101 }, (_, index) => ({ name: `O${index}`, type: "MESH" })) },
@@ -137,4 +170,12 @@ test("host mode is the safe default and API mode is opt-in", () => {
 
 test("classification rejects an empty task", () => {
   assert.equal(classifyTask(" ").kind, "invalid");
+});
+
+test("render preview script uses a fixed output path and restores the scene output path", () => {
+  const script = buildRenderPreviewScript();
+  assert.match(script, new RegExp(JSON.stringify(DEFAULT_RENDER_OUTPUT).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(script, /previous_filepath = scene\.render\.filepath/);
+  assert.match(script, /finally:\n    scene\.render\.filepath = previous_filepath/);
+  assert.match(script, /bpy\.ops\.render\.render\(write_still=True\)/);
 });

@@ -1,5 +1,6 @@
 const MAX_OBJECTS = 100;
 const MAX_COLLECTIONS = 50;
+const MAX_MATERIALS = 100;
 
 function round(value) {
   return Number.isFinite(Number(value)) ? Math.round(Number(value) * 1000) / 1000 : 0;
@@ -50,6 +51,48 @@ export function createSceneContextPacket({ userIntent, snapshot = {} } = {}) {
     collections: (Array.isArray(snapshot?.collections) ? snapshot.collections : [])
       .slice(0, MAX_COLLECTIONS)
       .map((collection) => String(collection).slice(0, 128)),
-    renderEngine: typeof snapshot?.render_engine === "string" ? snapshot.render_engine : undefined,
+    renderEngine:
+      typeof snapshot?.render_settings?.engine === "string"
+        ? snapshot.render_settings.engine
+        : (typeof snapshot?.render_engine === "string" ? snapshot.render_engine : undefined),
+  };
+}
+
+/** Context packet for material reasoning; excludes unrelated animation and raw logs. */
+export function createMaterialContextPacket({ userIntent, snapshot = {} } = {}) {
+  const rawObjects = Array.isArray(snapshot?.scene_objects) ? snapshot.scene_objects : [];
+  const objects = rawObjects.slice(0, MAX_OBJECTS).map((object) => ({
+    name: String(object?.name || "Unnamed").slice(0, 128),
+    type: String(object?.type || "UNKNOWN").slice(0, 32),
+    dimensions: vector(object?.dimensions),
+    materials: (Array.isArray(object?.materials) ? object.materials : [])
+      .slice(0, 12)
+      .map((material) => (typeof material === "string" ? material.slice(0, 128) : null)),
+  }));
+  const materials = (Array.isArray(snapshot?.materials) ? snapshot.materials : [])
+    .slice(0, MAX_MATERIALS)
+    .map((material) => ({
+      name: String(material?.name || "Unnamed").slice(0, 128),
+      useNodes: Boolean(material?.use_nodes),
+      nodeTypes: (Array.isArray(material?.node_types) ? material.node_types : [])
+        .slice(0, 30)
+        .map((type) => String(type).slice(0, 64)),
+      ...(material?.principled && typeof material.principled === "object"
+        ? { principled: material.principled }
+        : {}),
+    }));
+
+  return {
+    userIntent: String(userIntent || "").slice(0, 4000),
+    objects,
+    materials,
+    renderEngine:
+      typeof snapshot?.render_settings?.engine === "string"
+        ? snapshot.render_settings.engine
+        : undefined,
+    materialConventions:
+      snapshot?.material_conventions && typeof snapshot.material_conventions === "object"
+        ? snapshot.material_conventions
+        : undefined,
   };
 }
